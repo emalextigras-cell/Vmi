@@ -1,4 +1,4 @@
-8<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="utf-8">
@@ -36,15 +36,21 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 </div>
 
 <div class="card big">
-<div class="m"><b id="tp">–</b><span>Pièce, °C</span></div>
-<div class="m"><b id="hp">–</b><span>Pièce, humidité %</span></div>
-<div class="m"><b id="ti">–</b><span>Sonde interne, °C</span></div>
-<div class="m"><b id="hi">–</b><span>Sonde interne, humidité %</span></div>
+<div class="m"><b id="tp">–</b><span>Salon, °C</span></div>
+<div class="m"><b id="hp">–</b><span>Salon, humidité %</span></div>
+<div class="m"><b id="ti">–</b><span>Sonde 1 (résistances), °C</span></div>
+<div class="m"><b id="hi">–</b><span>Sonde 1, humidité %</span></div>
+<div class="m"><b id="t2">–</b><span>Sonde 2 (entrée d’air), °C</span></div>
+<div class="m"><b id="h2">–</b><span>Sonde 2, humidité %</span></div>
 </div>
 
 <div class="card">
-<div>Vitesse : <b id="sp">–</b> · Boost : <b id="bo">–</b> · Bypass : <b id="by">–</b> · Vacances : <b id="ho">–</b> · Mode nuit : <b id="ni">–</b></div>
+<div>Autonomie du filtre : <b id="fi">–</b> jours <span id="fb"></span></div>
+<div>Jours de fonctionnement : <b id="jf">–</b></div>
+<div>Volume à ventiler : <b id="vo">–</b> m³ · T° max soufflage : <b id="tm">–</b> °C</div>
 </div>
+
+<div class="card"><div>Octets de statut (à vérifier) : <b id="raw">–</b></div></div>
 
 <div class="card">
 <div>Vitesse
@@ -75,12 +81,15 @@ function onNotif(ev){
   const a=new Uint8Array(ev.target.value.buffer);log('< '+hex(a));
   if(a[0]!==0xA5||a[1]!==0xB6)return;
   const t=a[2];
-  if(t===1&&a.length>53){cur.vit=a[34]+1;cur.boost=a[44];cur.bypass=a[53];cur.hol=a[43];cur.nuit=a[33]===0?1:0;
-    $('sp').textContent=cur.vit;$('bo').textContent=a[44]?'oui':'non';$('by').textContent=a[53]?'oui':'non';$('ho').textContent=a[43]?'oui':'non';$('ni').textContent=cur.nuit?'oui':'non'}
-  else if(t===2&&a.length>13){cur.tp=a[11];cur.hp=a[13];$('tp').textContent=a[11];$('hp').textContent=a[13]}
-  else if(t===3&&a.length>8){cur.ti=a[6];cur.hi=a[8];$('ti').textContent=a[6];$('hi').textContent=a[8]}
+  if(t===1&&a.length>53){cur.filtre=a[28];cur.jours=a[26];cur.vol=a[22]|(a[23]<<8);cur.tmax=a[38];
+    $('fi').textContent=a[28];$('jf').textContent=a[26];$('vo').textContent=cur.vol;$('tm').textContent=a[38];
+    const n=Math.min(5,Math.floor(a[28]/365*5));$('fb').textContent='▮'.repeat(n)+'▯'.repeat(5-n);
+    $('raw').textContent='[33]='+a[33]+' [34]='+a[34]+' [37]='+a[37]+' [43]='+a[43]+' [44]='+a[44]+' [53]='+a[53]}
+  else if(t===2&&a.length>13){cur.sal_t=a[11];cur.sal_h=a[13];$('tp').textContent=a[11];$('hp').textContent=a[13]}
+  else if(t===3&&a.length>13){cur.s1_t=a[6];cur.s1_h=a[8];cur.s2_t=a[11];cur.s2_h=a[13];
+    $('ti').textContent=a[6];$('hi').textContent=a[8];$('t2').textContent=a[11];$('h2').textContent=a[13]}
   else return;
-  if(t!==1)hist.push({t:new Date().toISOString(),...cur});
+  hist.push({t:new Date().toISOString(),...cur});
 }
 async function poll(){for(const r of [3,6,7]){await send(r,0);await new Promise(r=>setTimeout(r,400))}}
 $('conn').onclick=async()=>{
@@ -101,7 +110,7 @@ $('conn').onclick=async()=>{
 $('disc').onclick=()=>{clearInterval(timer);if(dev&&dev.gatt.connected)dev.gatt.disconnect()};
 document.querySelectorAll('button[data-r]').forEach(b=>b.onclick=async()=>{if(chC){await send(+b.dataset.r,+b.dataset.v);setTimeout(poll,500)}});
 $('csv').onclick=()=>{
-  const k=['t','tp','hp','ti','hi','vit','boost','bypass'];
+  const k=['t','sal_t','sal_h','s1_t','s1_h','s2_t','s2_h','filtre','jours'];
   const csv=[k.join(',')].concat(hist.map(r=>k.map(x=>r[x]??'').join(','))).join('\n');
   const u=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const a=document.createElement('a');a.href=u;a.download='vmi-historique.csv';a.click()};
 $('cp').onclick=()=>navigator.clipboard.writeText(logLines.join('\n')).then(()=>err('Journal copié.'),e=>err(e));
@@ -109,4 +118,3 @@ if(!navigator.bluetooth)err('Web Bluetooth indisponible : ouvre cette page direc
 </script>
 </body>
 </html>
-
