@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>VMI – prototype Bluetooth</title>
+<title>VMI – Application</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2f6b4f">
 <style>
 :root{--bg:#f3f5f1;--card:#fff;--ink:#1d2a22;--mut:#5d6b62;--acc:#2f6b4f;--line:#d5dcd3;--warn:#a4411f;
 box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
@@ -17,21 +19,25 @@ p.s{color:var(--mut);margin:0 0 14px;font-size:.92rem}
 .m{flex:1 1 120px}
 .m b{display:block;font-size:1.9rem;line-height:1.1}
 .m span{color:var(--mut);font-size:.85rem}
-button{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--acc);background:var(--acc);color:var(--bg);margin:4px 4px 4px 0}
-button.o{background:transparent;color:var(--acc)}
+button, input[type="date"]{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--acc);background:var(--acc);color:var(--bg);margin:4px 4px 4px 0}
+button.o, input[type="date"].o{background:transparent;color:var(--acc)}
 button:disabled{opacity:.45}
 #st{color:var(--mut);font-size:.9rem}
 #err{color:var(--warn)}
-svg{width:100%;height:auto;display:block;margin:6px 0}
+.chart-container{position:relative}
+svg{width:100%;height:auto;display:block;margin:6px 0;cursor:crosshair;touch-action:pan-y}
 text{fill:var(--mut);font:10px Georgia,serif}
 .g{stroke:var(--line);stroke-width:.5}
+.tooltip{position:absolute;background:var(--ink);color:var(--bg);padding:4px 8px;font-size:11px;border-radius:4px;pointer-events:none;display:none;white-space:nowrap}
 h2{font-size:1.05rem;margin:.1em 0 .3em}
 pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+.row-flex{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <main>
-<h1>VMI : prototype Bluetooth</h1>
+<h1>VMI : Application Bluetooth</h1>
 <p class="s">Ferme l’appli VMI+ avant de te connecter : la VMI n’accepte qu’une seule connexion.</p>
 
 <div class="card">
@@ -54,7 +60,9 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 <div>Volume à ventiler : <b id="vo">–</b> m³ · T° max soufflage : <b id="tm">–</b> °C</div>
 </div>
 
-<div class="card"><div>Vitesse : <b id="sp">–</b> · Boost : <b id="bo">–</b> · Vacances : <b id="ho">–</b></div></div>
+<div class="card">
+<div>Vitesse : <b id="sp">–</b> · Boost : <b id="bo">–</b> · Vacances : <b id="ho">–</b></div>
+</div>
 
 <div class="card">
 <div>Vitesse
@@ -66,14 +74,35 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 </div>
 
 <div class="card">
-<h2>Historique</h2>
-<div>Importer un export VMI+ (.xlsx), il est mémorisé et fusionné avec les précédents : <input type="file" id="fx" accept=".xlsx,.xls"></div>
-<div>
-<button class="o" data-d="7">7 jours</button><button class="o" data-d="30">30 jours</button><button class="o" data-d="0">Tout</button>
-<button class="o" id="hi2">Import mémorisé</button><button class="o" id="lv">Enregistrement en direct</button><button class="o" id="ch">Effacer l’import</button></div>
-<div><button id="dlh">Télécharger les lignes manquantes</button><span id="dlp" class="s"></span></div>
+<h2>Historique & Analyses</h2>
+<div>Importer un export VMI+ (.xlsx) : <input type="file" id="fx" accept=".xlsx,.xls"></div>
+
+<div class="row-flex" style="margin-top:10px;">
+  <b>Vue Journalière :</b>
+  <button class="o" id="btn-prev">◀</button>
+  <input type="date" id="day-picker">
+  <button class="o" id="btn-next">▶</button>
+</div>
+
+<div class="row-flex">
+  <b>Vue Globale :</b>
+  <button class="o" data-d="7">7 jours</button>
+  <button class="o" data-d="30">30 jours</button>
+  <button class="o" data-d="0">Tout</button>
+</div>
+
+<div class="row-flex">
+  <b>Données :</b>
+  <button class="o" id="hi2">Historique VMI</button>
+  <button class="o" id="lv">En direct</button>
+  <button class="o" id="ch">Effacer l'import</button>
+</div>
+
+<div><button id="dlh">Télécharger les lignes manquantes</button><button class="o" id="clk">Régler l’heure de la VMI</button><span id="dlp" class="s"></span></div>
 <div id="hs" class="s"></div>
-<div id="c1"></div><div id="c2"></div><div id="c3"></div>
+<div id="c1" class="chart-container"></div>
+<div id="c2" class="chart-container"></div>
+<div id="c3" class="chart-container"></div>
 </div>
 
 <div class="card">
@@ -87,20 +116,106 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 <pre id="log"></pre>
 </div>
 </main>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
 <script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(e=>console.log('SW error:', e));
+}
+
 const SVC_C='0003cbbb-0000-1000-8000-00805f9b0131',CH_C='0003cbb1-0000-1000-8000-00805f9b0131';
 const SVC_T='0003cab5-0000-1000-8000-00805f9b0131',CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
-let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[],days=30,dl={on:false,rows:[],buf:'',tot:0,cut:null,got:false};
-try{live=JSON.parse(localStorage.getItem('vmi_live')||'[]')}catch(e){}
-try{hist=JSON.parse(localStorage.getItem('vmi_hist')||'[]').map(a=>({t:a[0],st:a[1],sh:a[2],t1:a[3],h1:a[4],te:a[5],he:a[6],rpm:a[7],fil:a[8]}))}catch(e){}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let dev,chC,chT,timer,sn,rcTimer,cur={},logLines=[],live=[],hist=[];
+let src='hist',selectedDate=null,daysSetting=30;
+let dl={on:false,rows:[],buf:'',tot:0,cut:null,got:false};
+let manualDisconnect=false,commandQueue=Promise.resolve();
+const DS=()=>src==='live'?live:hist;
+
+const dbName='VMI_DB',storeName='vmi_store';
+function openDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(dbName,1);
+    req.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains(storeName))db.createObjectStore(storeName);};
+    req.onsuccess=e=>resolve(e.target.result);
+    req.onerror=e=>reject(e.target.error);
+  });
+}
+async function idbGet(key){
+  try{
+    const db=await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(storeName,'readonly');
+      const req=tx.objectStore(storeName).get(key);
+      req.onsuccess=e=>resolve(e.target.result);
+      req.onerror=e=>reject(e.target.error);
+    });
+  }catch(e){return null;}
+}
+async function idbSet(key,val){
+  try{
+    const db=await openDB();
+    return new Promise((resolve,reject)=>{
+      const tx=db.transaction(storeName,'readwrite');
+      const req=tx.objectStore(storeName).put(val,key);
+      req.onsuccess=()=>resolve();
+      req.onerror=e=>reject(e.target.error);
+    });
+  }catch(e){}
+}
+
+async function initData(){
+  let l=await idbGet('vmi_live'),h=await idbGet('vmi_hist');
+  if(!h||!h.length){try{const x=JSON.parse(localStorage.getItem('vmi_hist')||'[]');if(x.length){h=x;await idbSet('vmi_hist',h)}}catch(e){}}
+  if(!l||!l.length){try{const x=JSON.parse(localStorage.getItem('vmi_live')||'[]');if(x.length){l=x;await idbSet('vmi_live',l)}}catch(e){}}
+  live=l||[];
+  hist=(h||[]).map(a=>({t:a[0],st:a[1],sh:a[2],t1:a[3],h1:a[4],te:a[5],he:a[6],rpm:a[7],fil:a[8]}));
+  $('lc').textContent=live.length;
+  render();
+}
+
+const p2=n=>String(n).padStart(2,'0');
+const localDay=()=>{const n=new Date();return n.getFullYear()+'-'+p2(n.getMonth()+1)+'-'+p2(n.getDate())};
+const shiftDay=(s,k)=>new Date(Date.parse((s||localDay())+'T00:00:00Z')+k*864e5).toISOString().slice(0,10);
+const ft=t=>new Date(t).toISOString().slice(11,16);
+const fdt=t=>{const s=new Date(t).toISOString();return s.slice(8,10)+'/'+s.slice(5,7)+' '+s.slice(11,16)};
+
+$('day-picker').onchange=e=>{selectedDate=e.target.value||null;render()};
+$('btn-prev').onclick=()=>{selectedDate=shiftDay(selectedDate,-1);$('day-picker').value=selectedDate;render()};
+$('btn-next').onclick=()=>{selectedDate=shiftDay(selectedDate,1);$('day-picker').value=selectedDate;render()};
+document.querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{
+  daysSetting=+b.dataset.d;selectedDate=null;$('day-picker').value='';render();
+});
+$('hi2').onclick=()=>{src='hist';render()};
+$('lv').onclick=()=>{src='live';render()};
+
 function crc(d){let c=0;for(const b of d){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?(((c<<1)^1)&0xFF):((c<<1)&0xFF);}return c^0x13}
 function frame(reg,val){const d=[0xA5,0xB6,0x10,0x06,0x05,reg,0,0,0,val];return new Uint8Array([...d,crc(d)])}
+function timeFrame(d){const b=[0xA5,0xB6,0x1A,0x06,0x06,d.getFullYear()%100,d.getMonth()+1,d.getDate(),d.getHours(),d.getMinutes(),d.getSeconds()];return new Uint8Array([...b,crc(b)])}
 const hex=a=>[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
 function log(s){logLines.push(s);if(logLines.length>300)logLines.shift();const p=$('log');p.textContent=logLines.slice(-40).join('\n');p.scrollTop=p.scrollHeight}
 function err(e){$('err').textContent=e?String(e.message||e):''}
-async function send(reg,val){try{await chC.writeValue(frame(reg,val));log('> '+hex(frame(reg,val)))}catch(e){err(e)}}
+
+function qWrite(f){
+  commandQueue=commandQueue.then(async()=>{
+    if(!chC)return;
+    try{
+      await chC.writeValue(f);
+      log('> '+hex(f));
+      await sleep(250);
+    }catch(e){err(e);}
+  });
+  return commandQueue;
+}
+const sendQueue=(reg,val)=>qWrite(frame(reg,val));
+async function setClock(){
+  if(!chC){err('Connecte-toi d’abord à la VMI.');return}
+  const n=new Date();
+  await qWrite(timeFrame(n));
+  $('dlp').textContent=' heure envoyée : '+n.toLocaleString('fr-FR');
+}
+$('clk').onclick=setClock;
+
 function onNotif(ev){
   const a=new Uint8Array(ev.target.value.buffer);log('< '+hex(a));
   if(a[0]!==0xA5||a[1]!==0xB6)return;
@@ -122,28 +237,34 @@ function onNotif(ev){
     if(dl.on&&a[13]===1){dlLine(dl.buf);endDl(false)}}
   else return;
 }
+
 function dlLine(l){
   if(!dl.on||!/^\d\d\/\d\d\/\d{4} \d\d:\d\d:\d\d;/.test(l))return;
   const f=l.split(';'),t=pdate(f[0]);if(t===null)return;
   if(dl.cut!==null&&t<=dl.cut){endDl(true);return}
   dl.rows.push(f)}
+
 function endDl(cut){
   if(!dl.on)return;dl.on=false;
   const n=dl.rows.length;ingest(dl.rows,0);
   $('dlp').textContent=' terminé : '+n+' nouvelles lignes'+(cut?' (historique à jour)':dl.cut!==null?' (attention : trou possible avant la dernière ligne mémorisée)':'');
   $('dlh').disabled=false;
   if(cut&&dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect()}
+
 $('dlh').onclick=async()=>{
   if(!chC){err('Connecte-toi d’abord à la VMI.');return}
   err('');dl={on:true,rows:[],buf:'',tot:0,got:false,cut:hist.length?hist[hist.length-1].t:null};$('dlh').disabled=true;$('dlp').textContent=' démarrage…';
-  await send(0x2c,0);await new Promise(r=>setTimeout(r,300));await send(0x20,0);await new Promise(r=>setTimeout(r,300));await send(0x22,0);
+  await setClock();await sendQueue(0x2c,0);await sendQueue(0x20,0);await sendQueue(0x22,0);
   setTimeout(()=>{if(dl.on&&!dl.got){dl.on=false;$('dlh').disabled=false;$('dlp').textContent=' pas de réponse de la VMI';}},20000)};
-async function poll(){if(dl.on)return;for(const r of [3,6,7]){await send(r,0);await new Promise(r=>setTimeout(r,400))}}
-$('conn').onclick=async()=>{
+
+async function poll(){if(dl.on)return;for(const r of [3,6,7]){await sendQueue(r,0);}}
+
+async function connectBLE(){
+  manualDisconnect=false;clearTimeout(rcTimer);
   err('');
   try{
     dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SVC_C,SVC_T]});
-    dev.addEventListener('gattserverdisconnected',()=>{clearInterval(timer);clearInterval(sn);$('st').textContent='Déconnecté.';$('conn').disabled=false;$('disc').disabled=true});
+    dev.addEventListener('gattserverdisconnected',onDisconnect);
     $('st').textContent='Connexion à '+(dev.name||'appareil')+'…';
     const s=await dev.gatt.connect();
     chC=await (await s.getPrimaryService(SVC_C)).getCharacteristic(CH_C);
@@ -152,75 +273,185 @@ $('conn').onclick=async()=>{
     try{await chC.startNotifications();chC.addEventListener('characteristicvaluechanged',onNotif)}catch(e){}
     $('st').textContent='Connecté à '+(dev.name||'appareil')+'.';$('conn').disabled=true;$('disc').disabled=false;
     poll();timer=setInterval(poll,10000);setTimeout(snap,15000);sn=setInterval(snap,300000);
-  }catch(e){err(e);$('st').textContent='Connexion impossible.'}
+  }catch(e){err(e);$('st').textContent='Connexion impossible.';}
+}
+
+function onDisconnect(){
+  clearInterval(timer);clearInterval(sn);
+  $('st').textContent='Déconnecté.';$('conn').disabled=false;$('disc').disabled=true;
+  if(!manualDisconnect&&dev){
+    $('st').textContent='Connexion perdue, reconnexion…';
+    clearTimeout(rcTimer);rcTimer=setTimeout(attemptReconnect,3000);
+  }
+}
+
+async function attemptReconnect(){
+  if(manualDisconnect||!dev)return;
+  try{
+    const s=await dev.gatt.connect();
+    chC=await (await s.getPrimaryService(SVC_C)).getCharacteristic(CH_C);
+    chT=await (await s.getPrimaryService(SVC_T)).getCharacteristic(CH_T);
+    await chT.startNotifications();chT.addEventListener('characteristicvaluechanged',onNotif);
+    try{await chC.startNotifications();chC.addEventListener('characteristicvaluechanged',onNotif)}catch(e){}
+    $('st').textContent='Reconnecté à '+(dev.name||'appareil')+'.';$('conn').disabled=true;$('disc').disabled=false;
+    poll();timer=setInterval(poll,10000);setTimeout(snap,15000);sn=setInterval(snap,300000);
+  }catch(e){clearTimeout(rcTimer);rcTimer=setTimeout(attemptReconnect,5000);}
+}
+
+$('conn').onclick=connectBLE;
+$('disc').onclick=()=>{
+  manualDisconnect=true;clearTimeout(rcTimer);
+  clearInterval(timer);clearInterval(sn);
+  if(dev&&dev.gatt.connected)dev.gatt.disconnect();
 };
-$('disc').onclick=()=>{clearInterval(timer);clearInterval(sn);if(dev&&dev.gatt.connected)dev.gatt.disconnect()};
-document.querySelectorAll('button[data-r]').forEach(b=>b.onclick=async()=>{if(chC){await send(+b.dataset.r,+b.dataset.v);setTimeout(poll,500)}});
+
+document.querySelectorAll('button[data-r]').forEach(b=>b.onclick=async()=>{if(chC){await sendQueue(+b.dataset.r,+b.dataset.v);setTimeout(poll,500)}});
+
 function snap(){
   if(cur.sal_t===undefined)return;
   live.push({t:Date.now(),st:cur.sal_t,sh:cur.sal_h,t1:cur.s1_t,h1:cur.s1_h,te:cur.s2_t,he:cur.s2_h,fil:cur.filtre,vit:cur.vit,boost:cur.boost,hol:cur.hol});
   if(live.length>5000)live.splice(0,live.length-5000);
-  try{localStorage.setItem('vmi_live',JSON.stringify(live))}catch(e){}
-  $('lc').textContent=live.length}
-$('lc').textContent=live.length;
+  idbSet('vmi_live',live);
+  $('lc').textContent=live.length;
+}
+
 $('csv').onclick=()=>{
   const k=['t','st','sh','t1','h1','te','he','fil','vit','boost','hol'];
   const csv=[k.join(',')].concat(live.map(r=>k.map(x=>x==='t'?new Date(r.t).toISOString():(r[x]??'')).join(','))).join('\n');
-  const u=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const a=document.createElement('a');a.href=u;a.download='vmi-enregistrement.csv';a.click()};
-$('clr').onclick=()=>{if(confirm('Effacer l’enregistrement en direct ?')){live=[];try{localStorage.removeItem('vmi_live')}catch(e){}$('lc').textContent=0}};
+  const u=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const a=document.createElement('a');a.href=u;a.download='vmi-enregistrement.csv';a.click();
+};
+
+$('clr').onclick=async()=>{
+  if(confirm('Effacer l’enregistrement en direct ?')){
+    live=[];await idbSet('vmi_live',[]);$('lc').textContent=0;render();
+  }
+};
+
 const num=v=>{if(typeof v==='number')return v;if(typeof v!=='string')return null;const x=parseFloat(v.replace(',','.'));return isNaN(x)?null:x};
 function pdate(v){
   if(typeof v==='number'&&v>30000){const c=XLSX.SSF.parse_date_code(v);return Date.UTC(c.y,c.d-1,c.m,c.H,c.M,Math.round(c.S))}
   if(typeof v==='string'){const m=v.match(/^(\d\d)\/(\d\d)\/(\d{4})[ T](\d\d):(\d\d):(\d\d)/);if(m)return Date.UTC(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6])}
   return null}
+
 function ingest(rows,s0){
   const m=new Map(hist.map(r=>[r.t,r]));
   for(let i=s0===undefined?4:s0;i<rows.length;i++){const r=rows[i],t=pdate(r[0]);if(t===null)continue;
     m.set(t,{t,st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[20])})}
   hist=[...m.values()].sort((a,b)=>a.t-b.t);
-  try{localStorage.setItem('vmi_hist',JSON.stringify(hist.map(r=>[r.t,r.st,r.sh,r.t1,r.h1,r.te,r.he,r.rpm,r.fil])))}catch(e){}
-  ds=hist;render()}
+  idbSet('vmi_hist',hist.map(r=>[r.t,r.st,r.sh,r.t1,r.h1,r.te,r.he,r.rpm,r.fil]));
+  src='hist';render();
+}
+
 $('fx').onchange=async e=>{
   const f=e.target.files[0];if(!f)return;err('');
   try{
     const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
     ingest(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}));
   }catch(x){err('Fichier illisible : '+x.message)}};
-$('hi2').onclick=()=>{ds=hist;render()};
-$('ch').onclick=()=>{if(confirm('Effacer l’historique importé ?')){hist=[];ds=[];try{localStorage.removeItem('vmi_hist')}catch(e){}render()}};
-document.querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{days=+b.dataset.d;render()});
-$('lv').onclick=()=>{ds=live.slice();render()};
+
+$('ch').onclick=async()=>{if(confirm('Effacer l’historique importé ?')){hist=[];await idbSet('vmi_hist',[]);render();}};
+
 const fd=t=>{const d=new Date(t);return d.getUTCDate()+'/'+(d.getUTCMonth()+1)};
+const S=(k,n,c)=>({n,c,p:DS().filter(r=>r[k]!=null).map(r=>[r.t,r[k]])});
+
 function chart(id,title,series){
   const el=$(id),all=series.flatMap(s=>s.p);
-  if(!all.length){el.innerHTML='';return}
+  el.innerHTML='';
+  if(!all.length)return;
   const W=360,H=170,L=36,R=8,T=22,B=20;
-  const xs=all.map(p=>p[0]),ys=all.map(p=>p[1]);
-  const x0=Math.min(...xs),x1=Math.max(...xs);let y0=Math.min(...ys),y1=Math.max(...ys);
+
+  let activeSeries=series;
+  let x0,x1,isDaily=false;
+
+  if(selectedDate){
+    isDaily=true;
+    const dayStart=Date.parse(selectedDate+'T00:00:00Z');
+    const dayEnd=dayStart+86400000;
+    activeSeries=series.map(s=>({n:s.n,c:s.c,p:s.p.filter(pt=>pt[0]>=dayStart&&pt[0]<dayEnd)}));
+    x0=dayStart;x1=dayEnd;
+  }else{
+    const last=all.map(p=>p[0]).reduce((a,b)=>Math.max(a,b));
+    activeSeries=daysSetting?series.map(s=>({n:s.n,c:s.c,p:s.p.filter(pt=>pt[0]>=last-daysSetting*864e5)})):series;
+    const activeAll=activeSeries.flatMap(s=>s.p);
+    if(!activeAll.length)return;
+    const xs=activeAll.map(p=>p[0]);
+    x0=Math.min(...xs);x1=Math.max(...xs);
+  }
+
+  const activeAll=activeSeries.flatMap(s=>s.p);
+  if(!activeAll.length){
+    el.innerHTML='<div><b>'+title+'</b></div><div class="s" style="padding:15px;text-align:center;">Aucune donnée sur cette période</div>';
+    return;
+  }
+
+  const ys=activeAll.map(p=>p[1]);
+  let y0=Math.min(...ys),y1=Math.max(...ys);
   if(y0===y1){y0-=1;y1+=1}const pd=(y1-y0)*.08;y0-=pd;y1+=pd;
+
   const X=t=>L+(t-x0)/((x1-x0)||1)*(W-L-R),Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
+
   let g='';
   for(let i=0;i<=2;i++){const v=y0+(y1-y0)*i/2,y=Y(v);g+='<line class="g" x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'"/><text x="2" y="'+(y+3)+'">'+(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1))+'</text>'}
+
+  if(isDaily){
+    for(let h=0;h<=24;h+=3){
+      const xPos=X(x0+h*3600000);
+      g+='<line class="g" x1="'+xPos+'" x2="'+xPos+'" y1="'+T+'" y2="'+(H-B)+'"/>';
+    }
+  }
+
   let leg='',lx=L;
-  series.forEach(s=>{
-    const st=Math.ceil(s.p.length/400);
+  activeSeries.forEach(s=>{
+    if(!s.p.length)return;
+    const st=isDaily?1:Math.ceil(s.p.length/400);
     const d=s.p.filter((_,i)=>i%st===0).map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join('');
     g+='<path d="'+d+'" fill="none" stroke="'+s.c+'" stroke-width="1.4"/>';
-    leg+='<text x="'+lx+'" y="12" style="fill:'+s.c+'">'+s.n+'</text>';lx+=s.n.length*5.4+14});
-  g+='<text x="'+L+'" y="'+(H-4)+'">'+fd(x0)+'</text><text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">'+fd(x1)+'</text>';
-  el.innerHTML='<div><b>'+title+'</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg>'}
+    leg+='<text x="'+lx+'" y="12" style="fill:'+s.c+'">'+s.n+'</text>';lx+=s.n.length*5.4+14;
+  });
+
+  if(isDaily){
+    g+='<text x="'+L+'" y="'+(H-4)+'">00h</text>';
+    g+='<text x="'+X(x0+12*3600000)+'" y="'+(H-4)+'" text-anchor="middle">12h</text>';
+    g+='<text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">24h</text>';
+  }else{
+    g+='<text x="'+L+'" y="'+(H-4)+'">'+fd(x0)+'</text><text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">'+fd(x1)+'</text>';
+  }
+
+  el.innerHTML='<div><b>'+title+(isDaily?' ('+selectedDate+')':'')+'</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg><div class="tooltip"></div>';
+
+  const svg=el.querySelector('svg'),tip=el.querySelector('.tooltip');
+  const move=e=>{
+    const rect=svg.getBoundingClientRect();
+    const xPos=(e.clientX-rect.left)*(W/(rect.width||W));
+    const tVal=x0+(xPos-L)/(W-L-R)*(x1-x0);
+    const validPts=activeSeries.flatMap(s=>s.p);
+    if(!validPts.length)return;
+    const closest=validPts.reduce((prev,curr)=>Math.abs(curr[0]-tVal)<Math.abs(prev[0]-tVal)?curr:prev);
+    let txt=(isDaily?ft(closest[0]):fdt(closest[0]))+' : ';
+    activeSeries.forEach(s=>{const pt=s.p.find(p=>p[0]===closest[0]);if(pt)txt+=s.n+'='+pt[1]+' '});
+    tip.textContent=txt;tip.style.display='block';
+    const cr=el.getBoundingClientRect();
+    tip.style.left=Math.max(0,Math.min(e.clientX-cr.left+10,cr.width-tip.offsetWidth-4))+'px';
+    tip.style.top=(e.clientY-cr.top-28)+'px';
+  };
+  svg.addEventListener('pointermove',move);
+  svg.addEventListener('pointerdown',move);
+  svg.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse')tip.style.display='none'});
+}
+
 function render(){
-  if(!ds.length){$('hs').textContent='Aucune donnée.';['c1','c2','c3'].forEach(i=>$(i).innerHTML='');return}
-  const last=ds[ds.length-1].t,d=days?ds.filter(r=>r.t>=last-days*864e5):ds;
-  const S=(k,n,c)=>({n,c,p:d.filter(r=>r[k]!=null).map(r=>[r.t,r[k]])});
-  const fl=d.length?d[d.length-1].fil:null;
-  $('hs').textContent=d.length+' relevés du '+fd(d[0].t)+' au '+fd(d[d.length-1].t)+(fl!=null?' · filtre : '+fl+' jours d’usage':'');
+  const D=DS();
+  if(!D.length){$('hs').textContent='Aucune donnée.';['c1','c2','c3'].forEach(i=>$(i).innerHTML='');return}
+  const fl=src==='hist'?D[D.length-1].fil:null;
+  $('hs').textContent=D.length+' relevés ('+(src==='live'?'enregistrement en direct':'historique VMI')+') · '+(selectedDate?'jour '+selectedDate:(daysSetting?daysSetting+' derniers jours':'tout'))+(fl!=null?' · filtre : '+fl+' jours d’usage':'');
   chart('c1','Humidité (%)',[S('sh','Salon','#2f6b4f'),S('h1','Sonde 1','#c0652b'),S('he','Entrée d’air','#3b6fb5')]);
   chart('c2','Température (°C)',[S('st','Salon','#2f6b4f'),S('t1','Sonde 1','#c0652b'),S('te','Entrée d’air','#3b6fb5')]);
-  chart('c3','Ventilateur (tr/min)',[S('rpm','Régime','#2f6b4f')])}
+  chart('c3','Ventilateur (tr/min)',[S('rpm','Régime','#2f6b4f')])
+}
+
 $('cp').onclick=()=>navigator.clipboard.writeText(logLines.join('\n')).then(()=>err('Journal copié.'),e=>err(e));
-if(hist.length){ds=hist;render()}
 if(!navigator.bluetooth)err('Web Bluetooth indisponible : ouvre cette page directement dans Chrome sur Android.');
+initData();
 </script>
 </body>
 </html>
