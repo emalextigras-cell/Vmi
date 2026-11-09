@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test historique VMI</title>
+<style>
+body{font:16px/1.45 Georgia,serif;margin:0 auto;padding:16px;max-width:560px;background:#f3f5f1;color:#1d2a22}
+@media(prefers-color-scheme:dark){body{background:#141a16;color:#e6ede8}}
+button,input{font:inherit;padding:10px 14px;margin:4px 4px 4px 0}
+pre{white-space:pre-wrap;word-break:break-all;font:13px/1.4 ui-monospace,monospace}
+</style>
+</head>
+<body>
+<h1>Test : ligne de départ</h1>
+<p>Ferme VMI+. Lance d’abord le test 1, puis le test 2. Chaque test dure une dizaine de secondes.</p>
+<button id="a">Test 1 : départ à 0</button>
+<div>Test 2, ligne de départ : <input id="n" type="number" value="10" min="1" max="255"><button id="b">Test 2</button></div>
+<pre id="o"></pre>
+<script>
+const SC='0003cbbb-0000-1000-8000-00805f9b0131',CC='0003cbb1-0000-1000-8000-00805f9b0131';
+const ST='0003cab5-0000-1000-8000-00805f9b0131',CT='0003caa2-0000-1000-8000-00805f9b0131';
+const $=i=>document.getElementById(i);
+function crc(d){let c=0;for(const b of d){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?(((c<<1)^1)&0xFF):((c<<1)&0xFF);}return c^0x13}
+function frame(reg,val){const d=[0xA5,0xB6,0x10,0x06,0x05,reg,0,0,0,val];return new Uint8Array([...d,crc(d)])}
+const hex=a=>[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
+const out=t=>{$('o').textContent+=t+'\n'};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const ts=s=>{const m=s.match(/(\d\d)\/(\d\d)\/(\d{4}) (\d\d):(\d\d):(\d\d)/);return Date.UTC(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6])};
+let dev,S={},A=null;
+function done(msg){
+  if(S.fin)return;S.fin=true;out(msg);
+  if(S.cb)S.cb(S.res);
+  try{if(dev&&dev.gatt.connected)dev.gatt.disconnect()}catch(e){}}
+function h(ev){
+  const a=new Uint8Array(ev.target.value.buffer);
+  if(a[0]!==0xA5||a[1]!==0xB6||a[2]!==0x30||S.fin)return;
+  let e=14;while(e<a.length&&a[e]!==0)e++;
+  S.buf+=new TextDecoder('latin1').decode(a.slice(14,e));
+  const m=S.buf.match(/\d\d\/\d\d\/\d{4} \d\d:\d\d:\d\d/);
+  if(m){S.res={d:m[0],c:a[9]|(a[10]<<8)};done('Première ligne de données reçue : '+m[0]+' (compteur de trame '+S.res.c+')')}}
+async function run(N,cb){
+  $('o').textContent='';S={buf:'',fin:false,cb,res:null};
+  try{
+    dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:[SC,ST]});
+    const s=await dev.gatt.connect();
+    const wc=await (await s.getPrimaryService(SC)).getCharacteristic(CC);
+    const nt=await (await s.getPrimaryService(ST)).getCharacteristic(CT);
+    await nt.startNotifications();nt.addEventListener('characteristicvaluechanged',h);
+    out('Connecté. Valeur de départ envoyée : '+N);
+    for(const [r,v] of [[0x2c,0],[0x20,0],[0x22,N]]){const f=frame(r,v);out('> '+hex(f));await wc.writeValue(f);await sleep(300)}
+    setTimeout(()=>{if(!S.fin)done('Aucune ligne de données reçue après 25 s.')},25000);
+  }catch(e){out('Erreur : '+(e.message||e))}}
+$('a').onclick=()=>run(0,r=>{A=r;out('→ Test 1 enregistré. Lance maintenant le test 2.')});
+$('b').onclick=()=>run(+$('n').value,r=>{
+  if(!A){out('Lance d’abord le test 1.');return}
+  if(!r){out('Test 2 sans résultat.');return}
+  const dt=ts(A.d)-ts(r.d);
+  if(dt>0)out('VERDICT : le flux a démarré '+Math.round(dt/60000)+' min plus tôt dans le temps que le test 1 → la valeur choisit la ligne de départ.');
+  else out('VERDICT : même première ligne que le test 1 → la valeur est ignorée.')});
+if(!navigator.bluetooth)out('Web Bluetooth indisponible : ouvre cette page dans Chrome sur Android.');
+</script>
+</body>
+</html>
