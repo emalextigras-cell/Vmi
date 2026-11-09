@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>VMI – prototype Bluetooth journalier</title>
+<title>VMI – prototype complet</title>
 <style>
 :root{--bg:#f3f5f1;--card:#fff;--ink:#1d2a22;--mut:#5d6b62;--acc:#2f6b4f;--line:#d5dcd3;--warn:#a4411f;
 box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
@@ -72,18 +72,25 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 </div>
 
 <div class="card">
-<h2>Historique & Vue Journalière</h2>
+<h2>Historique & Analyses</h2>
 <div>Importer un export VMI+ (.xlsx) : <input type="file" id="fx" accept=".xlsx,.xls"></div>
-<div class="row-flex">
-  <button class="o" id="btn-prev">Jour précédent</button>
+
+<div class="row-flex" style="margin-top:10px;">
+  <b>Vue Journalière :</b>
+  <button class="o" id="btn-prev">◀</button>
   <input type="date" id="day-picker">
-  <button class="o" id="btn-next">Jour suivant</button>
+  <button class="o" id="btn-next">▶</button>
 </div>
+
 <div class="row-flex">
-  <button class="o" id="hi2">Historique mémorisé</button>
-  <button class="o" id="lv">Enregistrement en direct</button>
-  <button class="o" id="ch">Effacer l’import</button>
+  <b>Vue Globale :</b>
+  <button class="o" data-d="7">7 jours</button>
+  <button class="o" data-d="30">30 jours</button>
+  <button class="o" data-d="0">Tout</button>
+  <button class="o" id="lv">En direct</button>
+  <button class="o" id="ch">Effacer l'import</button>
 </div>
+
 <div><button id="dlh">Télécharger les lignes manquantes</button><span id="dlp" class="s"></span></div>
 <div id="hs" class="s"></div>
 <div id="c1" class="chart-container"></div>
@@ -108,7 +115,8 @@ const SVC_C='0003cbbb-0000-1000-8000-00805f9b0131',CH_C='0003cbb1-0000-1000-8000
 const SVC_T='0003cab5-0000-1000-8000-00805f9b0131',CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
 let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[];
-let selectedDate = new Date().toISOString().slice(0,10); // Format YYYY-MM-DD du jour
+let selectedDate = null; // null = mode global actif, string 'YYYY-MM-DD' = mode journalier actif
+let daysSetting = 30;    // par défaut 30 jours en mode global
 let dl={on:false,rows:[],buf:'',tot:0,cut:null,got:false};
 let manualDisconnect=false, commandQueue=Promise.resolve();
 
@@ -151,11 +159,10 @@ async function initData(){
   $('lc').textContent=live.length;
   if(hist.length){
     ds=hist;
-    // Initialiser le datepicker sur la date la plus récente disponible
     const maxT = Math.max(...hist.map(r=>r.t));
     selectedDate = new Date(maxT).toISOString().slice(0,10);
+    $('day-picker').value = selectedDate;
   }
-  $('day-picker').value = selectedDate;
   render();
 }
 initData();
@@ -166,20 +173,27 @@ $('day-picker').onchange = e => {
 };
 
 $('btn-prev').onclick = () => {
-  let d = new Date(selectedDate);
-  d.setDate(d.getDate() - 1);
-  selectedDate = d.toISOString().slice(0,10);
+  let base = selectedDate ? new Date(selectedDate) : new Date();
+  base.setDate(base.getDate() - 1);
+  selectedDate = base.toISOString().slice(0,10);
   $('day-picker').value = selectedDate;
   render();
 };
 
 $('btn-next').onclick = () => {
-  let d = new Date(selectedDate);
-  d.setDate(d.getDate() + 1);
-  selectedDate = d.toISOString().slice(0,10);
+  let base = selectedDate ? new Date(selectedDate) : new Date();
+  base.setDate(base.getDate() + 1);
+  selectedDate = base.toISOString().slice(0,10);
   $('day-picker').value = selectedDate;
   render();
 };
+
+document.querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{
+  daysSetting = +b.dataset.d;
+  selectedDate = null; // Désactive le mode journalier pour repasser en mode global (7j/30j/tout)
+  $('day-picker').value = '';
+  render();
+});
 
 function crc(d){let c=0;for(const b of d){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?(((c<<1)^1)&0xFF):((c<<1)&0xFF);}return c^0x13}
 function frame(reg,val){const d=[0xA5,0xB6,0x10,0x06,0x05,reg,0,0,0,val];return new Uint8Array([...d,crc(d)])}
@@ -332,81 +346,102 @@ $('fx').onchange=async e=>{
     ingest(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}));
   }catch(x){err('Fichier illisible : '+x.message)}};
 
-$('hi2').onclick=()=>{ds=hist;render()};
 $('ch').onclick=async()=>{if(confirm('Effacer l’historique importé ?')){hist=[];ds=[];await idbSet('vmi_hist',[]);render();}};
-$('lv').onclick=()=>{ds=live.slice();render()};
+$('lv').onclick=()=>{ds=live.slice();selectedDate=null;$('day-picker').value='';render();};
 
-/* Génération des graphiques heure par heure pour la journée sélectionnée */
+const fd=t=>{const d=new Date(t);return d.getUTCDate()+'/'+(d.getUTCMonth()+1)};
+
+/* Rendu des graphiques (gère soit le mode journalier si une date est choisie, soit le mode global 7j/30j/tout) */
 function chart(id,title,series){
   const el=$(id),all=series.flatMap(s=>s.p);
   el.innerHTML='';
   if(!all.length)return;
   const W=360,H=170,L=36,R=8,T=22,B=20;
-  
-  // Bornes strictes de la journée sélectionnée en UTC (00:00 à 23:59)
-  const dayStart = Date.parse(selectedDate + 'T00:00:00Z');
-  const dayEnd = dayStart + 86400000;
-  
-  // Filtrer les points uniquement sur cette journée
-  const daySeries = series.map(s=>({
-    n: s.n,
-    c: s.c,
-    p: s.p.filter(pt => pt[0] >= dayStart && pt[0] < dayEnd)
-  }));
-  
-  const dayAll = daySeries.flatMap(s=>s.p);
-  if(!dayAll.length){
-    el.innerHTML='<div><b>'+title+'</b></div><div class="s" style="padding:20px;text-align:center;">Aucune donnée pour le '+selectedDate+'</div>';
+
+  let activeSeries = series;
+  let x0, x1, isDaily = false;
+
+  if(selectedDate){
+    isDaily = true;
+    const dayStart = Date.parse(selectedDate + 'T00:00:00Z');
+    const dayEnd = dayStart + 86400000;
+    activeSeries = series.map(s=>({
+      n: s.n, c: s.c,
+      p: s.p.filter(pt => pt[0] >= dayStart && pt[0] < dayEnd)
+    }));
+    x0 = dayStart;
+    x1 = dayEnd;
+  } else {
+    // Mode global (7j, 30j ou tout)
+    const last = all.map(p=>p[0]).reduce((a,b)=>Math.max(a,b));
+    const filteredSeries = daysSetting ? series.map(s=>({
+      n: s.n, c: s.c,
+      p: s.p.filter(pt => pt[0] >= last - daysSetting * 864e5)
+    })) : series;
+    
+    activeSeries = filteredSeries;
+    const activeAll = activeSeries.flatMap(s=>s.p);
+    if(!activeAll.length) return;
+    const xs = activeAll.map(p=>p[0]);
+    x0 = Math.min(...xs);
+    x1 = Math.max(...xs);
+  }
+
+  const activeAll = activeSeries.flatMap(s=>s.p);
+  if(!activeAll.length){
+    el.innerHTML='<div><b>'+title+'</b></div><div class="s" style="padding:15px;text-align:center;">Aucune donnée sur cette période</div>';
     return;
   }
-  
-  const ys=dayAll.map(p=>p[1]);
+
+  const ys = activeAll.map(p=>p[1]);
   let y0=Math.min(...ys),y1=Math.max(...ys);
   if(y0===y1){y0-=1;y1+=1}const pd=(y1-y0)*.08;y0-=pd;y1+=pd;
-  
-  // X s'étend de 00h à 24h fixes pour une vue journalière propre
-  const x0=dayStart, x1=dayEnd;
-  const X=t=>L+(t-x0)/864e5*(W-L-R), Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
-  
+
+  const X=t=>L+(t-x0)/((x1-x0)||1)*(W-L-R), Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
+
   let g='';
-  // Lignes horizontales de repère de valeur
   for(let i=0;i<=2;i++){const v=y0+(y1-y0)*i/2,y=Y(v);g+='<line class="g" x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'"/><text x="2" y="'+(y+3)+'">'+(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1))+'</text>'}
-  
-  // Grille verticale heure par heure (toutes les 3 heures pour la lisibilité)
-  for(let h=0; h<=24; h+=3){
-    const hTime = dayStart + h * 3600000;
-    const xPos = X(hTime);
-    g+='<line class="g" x1="'+xPos+'" x2="'+xPos+'" y1="'+T+'" y2="'+(H-B)+'"/>';
+
+  if(isDaily){
+    // Grille verticale heure par heure (toutes les 3h)
+    for(let h=0; h<=24; h+=3){
+      const hTime = x0 + h * 3600000;
+      const xPos = X(hTime);
+      g+='<line class="g" x1="'+xPos+'" x2="'+xPos+'" y1="'+T+'" y2="'+(H-B)+'"/>';
+    }
   }
 
   let leg='',lx=L;
-  daySeries.forEach(s=>{
+  activeSeries.forEach(s=>{
     if(!s.p.length)return;
-    const d=s.p.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join('');
+    const st = isDaily ? 1 : Math.ceil(s.p.length/400);
+    const d=s.p.filter((_,i)=>i%st===0).map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join('');
     g+='<path d="'+d+'" fill="none" stroke="'+s.c+'" stroke-width="1.4"/>';
     leg+='<text x="'+lx+'" y="12" style="fill:'+s.c+'">'+s.n+'</text>';lx+=s.n.length*5.4+14;
   });
-  
-  // Légende de l'axe des X : de 00h à 21h / 24h
-  g+='<text x="'+L+'" y="'+(H-4)+'">00h</text>';
-  g+='<text x="'+X(dayStart+12*3600000)+'" y="'+(H-4)+'" text-anchor="middle">12h</text>';
-  g+='<text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">24h</text>';
-  
-  el.innerHTML='<div><b>'+title+' ('+selectedDate+')</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg><div class="tooltip"></div>';
-  
+
+  if(isDaily){
+    g+='<text x="'+L+'" y="'+(H-4)+'">00h</text>';
+    g+='<text x="'+X(x0+12*3600000)+'" y="'+(H-4)+'" text-anchor="middle">12h</text>';
+    g+='<text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">24h</text>';
+  } else {
+    g+='<text x="'+L+'" y="'+(H-4)+'">'+fd(x0)+'</text><text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">'+fd(x1)+'</text>';
+  }
+
+  el.innerHTML='<div><b>'+title+(isDaily?' ('+selectedDate+')':'')+'</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg><div class="tooltip"></div>';
+
   const svg=el.querySelector('svg'), tip=el.querySelector('.tooltip');
   svg.onmousemove=e=>{
     const rect=svg.getBoundingClientRect();
     const xPos=(e.clientX-rect.left)*(W/rect.width);
     const tVal=x0+(xPos-L)/(W-L-R)*(x1-x0);
-    // Trouver le point le plus proche sur les séries du jour
-    let validPts=daySeries.flatMap(s=>s.p);
+    let validPts=activeSeries.flatMap(s=>s.p);
     if(!validPts.length)return;
     let closest=validPts.reduce((prev,curr)=>Math.abs(curr[0]-tVal)<Math.abs(prev[0]-tVal)?curr:prev);
-    
-    let timeStr = new Date(closest[0]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+    let timeStr = isDaily ? new Date(closest[0]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : new Date(closest[0]).toLocaleString();
     let txt = timeStr+' : ';
-    daySeries.forEach(s=>{
+    activeSeries.forEach(s=>{
       let pt=s.p.find(p=>p[0]===closest[0]);
       if(pt)txt+=s.n+'='+pt[1]+' ';
     });
@@ -420,7 +455,7 @@ function chart(id,title,series){
 
 function render(){
   if(!ds.length){$('hs').textContent='Aucune donnée.';['c1','c2','c3'].forEach(i=>$(i).innerHTML='');return}
-  $('hs').textContent=ds.length+' relevés au total en mémoire.';
+  $('hs').textContent=ds.length+' relevés en mémoire'+(selectedDate?' (Vue journalière : '+selectedDate+')':' (Vue globale : '+(daysSetting?daysSetting+' jours':'Tout')+')');
   chart('c1','Humidité (%)',[S('sh','Salon','#2f6b4f'),S('h1','Sonde 1','#c0652b'),S('he','Entrée d’air','#3b6fb5')]);
   chart('c2','Température (°C)',[S('st','Salon','#2f6b4f'),S('t1','Sonde 1','#c0652b'),S('te','Entrée d’air','#3b6fb5')]);
   chart('c3','Ventilateur (tr/min)',[S('rpm','Régime','#2f6b4f')])
