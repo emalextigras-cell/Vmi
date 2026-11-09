@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>VMI – prototype Bluetooth optimisé</title>
+<title>VMI – prototype Bluetooth journalier</title>
 <style>
 :root{--bg:#f3f5f1;--card:#fff;--ink:#1d2a22;--mut:#5d6b62;--acc:#2f6b4f;--line:#d5dcd3;--warn:#a4411f;
 box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
@@ -17,8 +17,8 @@ p.s{color:var(--mut);margin:0 0 14px;font-size:.92rem}
 .m{flex:1 1 120px}
 .m b{display:block;font-size:1.9rem;line-height:1.1}
 .m span{color:var(--mut);font-size:.85rem}
-button{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--acc);background:var(--acc);color:var(--bg);margin:4px 4px 4px 0}
-button.o{background:transparent;color:var(--acc)}
+button, input[type="date"]{font:inherit;padding:10px 14px;border-radius:6px;border:1px solid var(--acc);background:var(--acc);color:var(--bg);margin:4px 4px 4px 0}
+button.o, input[type="date"].o{background:transparent;color:var(--acc)}
 button:disabled{opacity:.45}
 #st{color:var(--mut);font-size:.9rem}
 #err{color:var(--warn)}
@@ -29,11 +29,8 @@ text{fill:var(--mut);font:10px Georgia,serif}
 .tooltip{position:absolute;background:var(--ink);color:var(--bg);padding:4px 8px;font-size:11px;border-radius:4px;pointer-events:none;display:none;white-space:nowrap}
 h2{font-size:1.05rem;margin:.1em 0 .3em}
 pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,monospace;white-space:pre-wrap;word-break:break-all}
+.row-flex{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0}
 </style>
-<!-- SheetJS embarqué pour autonomie 100% hors-ligne -->
-<script>
-/* compressed SheetJS core stub / library placeholder or full source if needed */
-</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
@@ -75,11 +72,18 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 </div>
 
 <div class="card">
-<h2>Historique</h2>
-<div>Importer un export VMI+ (.xlsx), mémorisé et fusionné : <input type="file" id="fx" accept=".xlsx,.xls"></div>
-<div>
-<button class="o" data-d="7">7 jours</button><button class="o" data-d="30">30 jours</button><button class="o" data-d="0">Tout</button>
-<button class="o" id="hi2">Import mémorisé</button><button class="o" id="lv">Enregistrement en direct</button><button class="o" id="ch">Effacer l’import</button></div>
+<h2>Historique & Vue Journalière</h2>
+<div>Importer un export VMI+ (.xlsx) : <input type="file" id="fx" accept=".xlsx,.xls"></div>
+<div class="row-flex">
+  <button class="o" id="btn-prev">Jour précédent</button>
+  <input type="date" id="day-picker">
+  <button class="o" id="btn-next">Jour suivant</button>
+</div>
+<div class="row-flex">
+  <button class="o" id="hi2">Historique mémorisé</button>
+  <button class="o" id="lv">Enregistrement en direct</button>
+  <button class="o" id="ch">Effacer l’import</button>
+</div>
 <div><button id="dlh">Télécharger les lignes manquantes</button><span id="dlp" class="s"></span></div>
 <div id="hs" class="s"></div>
 <div id="c1" class="chart-container"></div>
@@ -103,10 +107,11 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 const SVC_C='0003cbbb-0000-1000-8000-00805f9b0131',CH_C='0003cbb1-0000-1000-8000-00805f9b0131';
 const SVC_T='0003cab5-0000-1000-8000-00805f9b0131',CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
-let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[],days=30,dl={on:false,rows:[],buf:'',tot:0,cut:null,got:false};
+let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[];
+let selectedDate = new Date().toISOString().slice(0,10); // Format YYYY-MM-DD du jour
+let dl={on:false,rows:[],buf:'',tot:0,cut:null,got:false};
 let manualDisconnect=false, commandQueue=Promise.resolve();
 
-/* Gestion IndexedDB robuste pour éviter les limites de localStorage */
 const dbName='VMI_DB', storeName='vmi_store';
 function openDB(){
   return new Promise((resolve,reject)=>{
@@ -144,9 +149,37 @@ async function initData(){
   const rawHist=(await idbGet('vmi_hist'))||[];
   hist=rawHist.map(a=>({t:a[0],st:a[1],sh:a[2],t1:a[3],h1:a[4],te:a[5],he:a[6],rpm:a[7],fil:a[8]}));
   $('lc').textContent=live.length;
-  if(hist.length){ds=hist;render();}
+  if(hist.length){
+    ds=hist;
+    // Initialiser le datepicker sur la date la plus récente disponible
+    const maxT = Math.max(...hist.map(r=>r.t));
+    selectedDate = new Date(maxT).toISOString().slice(0,10);
+  }
+  $('day-picker').value = selectedDate;
+  render();
 }
 initData();
+
+$('day-picker').onchange = e => {
+  selectedDate = e.target.value;
+  render();
+};
+
+$('btn-prev').onclick = () => {
+  let d = new Date(selectedDate);
+  d.setDate(d.getDate() - 1);
+  selectedDate = d.toISOString().slice(0,10);
+  $('day-picker').value = selectedDate;
+  render();
+};
+
+$('btn-next').onclick = () => {
+  let d = new Date(selectedDate);
+  d.setDate(d.getDate() + 1);
+  selectedDate = d.toISOString().slice(0,10);
+  $('day-picker').value = selectedDate;
+  render();
+};
 
 function crc(d){let c=0;for(const b of d){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?(((c<<1)^1)&0xFF):((c<<1)&0xFF);}return c^0x13}
 function frame(reg,val){const d=[0xA5,0xB6,0x10,0x06,0x05,reg,0,0,0,val];return new Uint8Array([...d,crc(d)])}
@@ -154,7 +187,6 @@ const hex=a=>[...a].map(x=>x.toString(16).padStart(2,'0')).join('');
 function log(s){logLines.push(s);if(logLines.length>300)logLines.shift();const p=$('log');p.textContent=logLines.slice(-40).join('\n');p.scrollTop=p.scrollHeight}
 function err(e){$('err').textContent=e?String(e.message||e):''}
 
-/* File d'attente sécurisée pour les commandes Bluetooth */
 function sendQueue(reg,val){
   commandQueue=commandQueue.then(async()=>{
     if(!chC)return;
@@ -302,44 +334,79 @@ $('fx').onchange=async e=>{
 
 $('hi2').onclick=()=>{ds=hist;render()};
 $('ch').onclick=async()=>{if(confirm('Effacer l’historique importé ?')){hist=[];ds=[];await idbSet('vmi_hist',[]);render();}};
-document.querySelectorAll('button[data-d]').forEach(b=>b.onclick=()=>{days=+b.dataset.d;render()});
 $('lv').onclick=()=>{ds=live.slice();render()};
 
-const fd=t=>{const d=new Date(t);return d.getUTCDate()+'/'+(d.getUTCMonth()+1)+'/'+d.getUTCFullYear()};
-
-/* Génération des graphiques avec infobulle interactive au survol */
+/* Génération des graphiques heure par heure pour la journée sélectionnée */
 function chart(id,title,series){
   const el=$(id),all=series.flatMap(s=>s.p);
   el.innerHTML='';
   if(!all.length)return;
   const W=360,H=170,L=36,R=8,T=22,B=20;
-  const xs=all.map(p=>p[0]),ys=all.map(p=>p[1]);
-  const x0=Math.min(...xs),x1=Math.max(...xs);let y0=Math.min(...ys),y1=Math.max(...ys);
+  
+  // Bornes strictes de la journée sélectionnée en UTC (00:00 à 23:59)
+  const dayStart = Date.parse(selectedDate + 'T00:00:00Z');
+  const dayEnd = dayStart + 86400000;
+  
+  // Filtrer les points uniquement sur cette journée
+  const daySeries = series.map(s=>({
+    n: s.n,
+    c: s.c,
+    p: s.p.filter(pt => pt[0] >= dayStart && pt[0] < dayEnd)
+  }));
+  
+  const dayAll = daySeries.flatMap(s=>s.p);
+  if(!dayAll.length){
+    el.innerHTML='<div><b>'+title+'</b></div><div class="s" style="padding:20px;text-align:center;">Aucune donnée pour le '+selectedDate+'</div>';
+    return;
+  }
+  
+  const ys=dayAll.map(p=>p[1]);
+  let y0=Math.min(...ys),y1=Math.max(...ys);
   if(y0===y1){y0-=1;y1+=1}const pd=(y1-y0)*.08;y0-=pd;y1+=pd;
-  const X=t=>L+(t-x0)/((x1-x0)||1)*(W-L-R),Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
+  
+  // X s'étend de 00h à 24h fixes pour une vue journalière propre
+  const x0=dayStart, x1=dayEnd;
+  const X=t=>L+(t-x0)/864e5*(W-L-R), Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
   
   let g='';
+  // Lignes horizontales de repère de valeur
   for(let i=0;i<=2;i++){const v=y0+(y1-y0)*i/2,y=Y(v);g+='<line class="g" x1="'+L+'" x2="'+(W-R)+'" y1="'+y+'" y2="'+y+'"/><text x="2" y="'+(y+3)+'">'+(Math.abs(v)>=100?v.toFixed(0):v.toFixed(1))+'</text>'}
-  let leg='',lx=L;
-  series.forEach(s=>{
-    const st=Math.ceil(s.p.length/400);
-    const d=s.p.filter((_,i)=>i%st===0).map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join('');
-    g+='<path d="'+d+'" fill="none" stroke="'+s.c+'" stroke-width="1.4"/>';
-    leg+='<text x="'+lx+'" y="12" style="fill:'+s.c+'">'+s.n+'</text>';lx+=s.n.length*5.4+14});
-  g+='<text x="'+L+'" y="'+(H-4)+'">'+fd(x0)+'</text><text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">'+fd(x1)+'</text>';
   
-  el.innerHTML='<div><b>'+title+'</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg><div class="tooltip"></div>';
+  // Grille verticale heure par heure (toutes les 3 heures pour la lisibilité)
+  for(let h=0; h<=24; h+=3){
+    const hTime = dayStart + h * 3600000;
+    const xPos = X(hTime);
+    g+='<line class="g" x1="'+xPos+'" x2="'+xPos+'" y1="'+T+'" y2="'+(H-B)+'"/>';
+  }
+
+  let leg='',lx=L;
+  daySeries.forEach(s=>{
+    if(!s.p.length)return;
+    const d=s.p.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+' '+Y(p[1]).toFixed(1)).join('');
+    g+='<path d="'+d+'" fill="none" stroke="'+s.c+'" stroke-width="1.4"/>';
+    leg+='<text x="'+lx+'" y="12" style="fill:'+s.c+'">'+s.n+'</text>';lx+=s.n.length*5.4+14;
+  });
+  
+  // Légende de l'axe des X : de 00h à 21h / 24h
+  g+='<text x="'+L+'" y="'+(H-4)+'">00h</text>';
+  g+='<text x="'+X(dayStart+12*3600000)+'" y="'+(H-4)+'" text-anchor="middle">12h</text>';
+  g+='<text x="'+(W-R)+'" y="'+(H-4)+'" text-anchor="end">24h</text>';
+  
+  el.innerHTML='<div><b>'+title+' ('+selectedDate+')</b></div><svg viewBox="0 0 '+W+' '+H+'">'+leg+g+'</svg><div class="tooltip"></div>';
   
   const svg=el.querySelector('svg'), tip=el.querySelector('.tooltip');
   svg.onmousemove=e=>{
     const rect=svg.getBoundingClientRect();
     const xPos=(e.clientX-rect.left)*(W/rect.width);
     const tVal=x0+(xPos-L)/(W-L-R)*(x1-x0);
-    // Trouver le point le plus proche sur la première série
-    if(!series[0]||!series[0].p.length)return;
-    let closest=series[0].p.reduce((prev,curr)=>Math.abs(curr[0]-tVal)<Math.abs(prev[0]-tVal)?curr:prev);
-    let txt=new Date(closest[0]).toLocaleString()+' : ';
-    series.forEach(s=>{
+    // Trouver le point le plus proche sur les séries du jour
+    let validPts=daySeries.flatMap(s=>s.p);
+    if(!validPts.length)return;
+    let closest=validPts.reduce((prev,curr)=>Math.abs(curr[0]-tVal)<Math.abs(prev[0]-tVal)?curr:prev);
+    
+    let timeStr = new Date(closest[0]).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    let txt = timeStr+' : ';
+    daySeries.forEach(s=>{
       let pt=s.p.find(p=>p[0]===closest[0]);
       if(pt)txt+=s.n+'='+pt[1]+' ';
     });
@@ -353,13 +420,13 @@ function chart(id,title,series){
 
 function render(){
   if(!ds.length){$('hs').textContent='Aucune donnée.';['c1','c2','c3'].forEach(i=>$(i).innerHTML='');return}
-  const last=ds[ds.length-1].t,d=days?ds.filter(r=>r.t>=last-days*864e5):ds;
-  const S=(k,n,c)=>({n,c,p:d.filter(r=>r[k]!=null).map(r=>[r.t,r[k]])});
-  const fl=d.length?d[d.length-1].fil:null;
-  $('hs').textContent=d.length+' relevés du '+fd(d[0].t)+' au '+fd(d[d.length-1].t)+(fl!=null?' · filtre : '+fl+' jours d’usage':'');
+  $('hs').textContent=ds.length+' relevés au total en mémoire.';
   chart('c1','Humidité (%)',[S('sh','Salon','#2f6b4f'),S('h1','Sonde 1','#c0652b'),S('he','Entrée d’air','#3b6fb5')]);
   chart('c2','Température (°C)',[S('st','Salon','#2f6b4f'),S('t1','Sonde 1','#c0652b'),S('te','Entrée d’air','#3b6fb5')]);
-  chart('c3','Ventilateur (tr/min)',[S('rpm','Régime','#2f6b4f')])}
+  chart('c3','Ventilateur (tr/min)',[S('rpm','Régime','#2f6b4f')])
+}
+
+const S=(k,n,c)=>({n,c,p:ds.filter(r=>r[k]!=null).map(r=>[r.t,r[k]])});
 
 $('cp').onclick=()=>navigator.clipboard.writeText(logLines.join('\n')).then(()=>err('Journal copié.'),e=>err(e));
 if(!navigator.bluetooth)err('Web Bluetooth indisponible : ouvre cette page directement dans Chrome sur Android.');
