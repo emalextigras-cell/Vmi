@@ -71,6 +71,7 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 <div>
 <button class="o" data-d="7">7 jours</button><button class="o" data-d="30">30 jours</button><button class="o" data-d="0">Tout</button>
 <button class="o" id="hi2">Import mémorisé</button><button class="o" id="lv">Enregistrement en direct</button><button class="o" id="ch">Effacer l’import</button></div>
+<div><button id="dlh">Télécharger l’historique depuis la VMI</button><span id="dlp" class="s"></span></div>
 <div id="hs" class="s"></div>
 <div id="c1"></div><div id="c2"></div><div id="c3"></div>
 </div>
@@ -91,7 +92,7 @@ pre{margin:0;max-height:220px;overflow:auto;font:12px/1.4 ui-monospace,Menlo,mon
 const SVC_C='0003cbbb-0000-1000-8000-00805f9b0131',CH_C='0003cbb1-0000-1000-8000-00805f9b0131';
 const SVC_T='0003cab5-0000-1000-8000-00805f9b0131',CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
-let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[],days=30;
+let dev,chC,chT,timer,sn,cur={},logLines=[],live=[],hist=[],ds=[],days=30,dl={on:false,parts:[],tot:0};
 try{live=JSON.parse(localStorage.getItem('vmi_live')||'[]')}catch(e){}
 try{hist=JSON.parse(localStorage.getItem('vmi_hist')||'[]').map(a=>({t:a[0],st:a[1],sh:a[2],t1:a[3],h1:a[4],te:a[5],he:a[6],rpm:a[7],fil:a[8]}))}catch(e){}
 function crc(d){let c=0;for(const b of d){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?(((c<<1)^1)&0xFF):((c<<1)&0xFF);}return c^0x13}
@@ -111,9 +112,24 @@ function onNotif(ev){
   else if(t===2&&a.length>13){cur.sal_t=a[11];cur.sal_h=a[13];$('tp').textContent=a[11];$('hp').textContent=a[13]}
   else if(t===3&&a.length>13){cur.s1_t=a[6];cur.s1_h=a[8];cur.s2_t=a[11];cur.s2_h=a[13];
     $('ti').textContent=a[6];$('hi').textContent=a[8];$('t2').textContent=a[11];$('h2').textContent=a[13]}
+  else if(t===4&&a.length>7){dl.tot=a[6]|(a[7]<<8)}
+  else if(t===0x30&&dl.on){
+    let e=14;while(e<a.length&&a[e]!==0)e++;
+    dl.parts.push(new TextDecoder('latin1').decode(a.slice(14,e)));
+    const row=a[9]|(a[10]<<8);$('dlp').textContent=' '+row+' / '+(dl.tot||'?')+' lignes';
+    if(a[13]===1)endDl()}
   else return;
 }
-async function poll(){for(const r of [3,6,7]){await send(r,0);await new Promise(r=>setTimeout(r,400))}}
+function endDl(){
+  dl.on=false;
+  const rows=dl.parts.join('').split('\n').filter(l=>/^\d\d\/\d\d\/\d{4} \d\d:\d\d:\d\d;/.test(l)).map(l=>l.split(';'));
+  dl.parts=[];ingest(rows,0);$('dlp').textContent=' terminé : '+rows.length+' lignes reçues';$('dlh').disabled=false}
+$('dlh').onclick=async()=>{
+  if(!chC){err('Connecte-toi d’abord à la VMI.');return}
+  err('');dl={on:true,parts:[],tot:0};$('dlh').disabled=true;$('dlp').textContent=' démarrage…';
+  await send(0x2c,0);await new Promise(r=>setTimeout(r,300));await send(0x20,0);await new Promise(r=>setTimeout(r,300));await send(0x22,0);
+  setTimeout(()=>{if(dl.on&&!dl.parts.length){dl.on=false;$('dlh').disabled=false;$('dlp').textContent=' pas de réponse de la VMI';}},20000)};
+async function poll(){if(dl.on)return;for(const r of [3,6,7]){await send(r,0);await new Promise(r=>setTimeout(r,400))}}
 $('conn').onclick=async()=>{
   err('');
   try{
@@ -148,9 +164,9 @@ function pdate(v){
   if(typeof v==='number'&&v>30000){const c=XLSX.SSF.parse_date_code(v);return Date.UTC(c.y,c.d-1,c.m,c.H,c.M,Math.round(c.S))}
   if(typeof v==='string'){const m=v.match(/^(\d\d)\/(\d\d)\/(\d{4})[ T](\d\d):(\d\d):(\d\d)/);if(m)return Date.UTC(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+m[6])}
   return null}
-function ingest(rows){
+function ingest(rows,s0){
   const m=new Map(hist.map(r=>[r.t,r]));
-  for(let i=4;i<rows.length;i++){const r=rows[i],t=pdate(r[0]);if(t===null)continue;
+  for(let i=s0===undefined?4:s0;i<rows.length;i++){const r=rows[i],t=pdate(r[0]);if(t===null)continue;
     m.set(t,{t,st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[20])})}
   hist=[...m.values()].sort((a,b)=>a.t-b.t);
   try{localStorage.setItem('vmi_hist',JSON.stringify(hist.map(r=>[r.t,r.st,r.sh,r.t1,r.h1,r.te,r.he,r.rpm,r.fil])))}catch(e){}
