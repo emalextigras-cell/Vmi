@@ -203,7 +203,7 @@ const fmt=v=>Number.isFinite(v)?v.toFixed(1):'–';
 const num=v=>{if(typeof v==='number')return Number.isFinite(v)?v:null;if(typeof v!=='string')return null;const n=parseFloat(v.trim().replace(',','.'));return Number.isFinite(n)?n:null};
 
 let dev=null,chC=null,chT=null,pollTimer=null,snapTimer=null,reconnectTimer=null;
-let manualDisconnect=false,commandQueue=Promise.resolve();
+let manualDisconnect=false,commandQueue=Promise.resolve(),manualCommandPending=false;
 let cur={},lastSeen={},live=[],hist=[],source='hist',selectedDate=null,daysSetting=30;
 let logLines=[];
 let download={on:false,rows:[],buf:'',total:0,cut:null,got:false,lastPacket:0,timeout:null};
@@ -254,10 +254,27 @@ function frame(reg,val){const d=[0xA5,0xB6,0x10,0x06,0x05,reg,0,0,0,val];return 
 function timeFrame(d){const b=[0xA5,0xB6,0x1A,0x06,0x06,d.getFullYear()%100,d.getMonth()+1,d.getDate(),d.getHours(),d.getMinutes(),d.getSeconds()];return new Uint8Array([...b,crc(b)])}
 const hex=a=>Array.from(a,x=>x.toString(16).padStart(2,'0')).join('');
 function writeFrame(bytes){
- commandQueue=commandQueue.then(async()=>{
-  if(!chC)throw new Error('VMI non connectée');
-  await chC.writeValue(bytes);log('> '+hex(bytes));await sleep(250);
- }).catch(e=>{showError(e);log('Erreur commande : '+e.message)});
+ const task=commandQueue.then(async()=>{
+  if(!chC||!dev?.gatt?.connected)throw new Error('VMI non connectée');
+  // Préférer l'écriture GATT avec accusé de réception lorsqu'elle est supportée.
+  if(chC.properties?.write && typeof chC.writeValueWithResponse==='function'){
+   await chC.writeValueWithResponse(bytes);
+  }else if(chC.properties?.writeWithoutResponse && typeof chC.writeValueWithoutResponse==='function'){
+   await chC.writeValueWithoutResponse(bytes);
+  }else if(typeof chC.writeValue==='function'){
+   await chC.writeValue(bytes); // Compatibilité avec les anciens navigateurs.
+  }else{
+   throw new Error('Cette caractéristique Bluetooth ne permet pas l’écriture.');
+  }
+  log('> '+hex(bytes));
+  await sleep(350);
+  return true;
+ });
+ commandQueue=task.catch(e=>{
+  showError('Échec de l’envoi Bluetooth : '+(e.message||e));
+  log('Erreur commande : '+(e.message||e));
+  return false;
+ });
  return commandQueue;
 }
 const send=(reg,val)=>writeFrame(frame(reg,val));
@@ -325,8 +342,20 @@ function takeSnapshot(){
  if(source==='live')render();
 }
 
-async function poll(){if(!chC||download.on)return;for(const r of [3,6,7])await send(r,0)}
-function startPolling(){clearInterval(pollTimer);clearInterval(snapTimer);poll();pollTimer=setInterval(poll,10000);setTimeout(takeSnapshot,15000);snapTimer=setInterval(takeSnapshot,300000)}
+async function poll(force=false){
+ if(!chC||download.on||(manualCommandPending&&!force))return;
+ for(const r of [3,6,7]){
+  if(!chC||download.on)return;
+  await send(r,0);
+ }
+}
+function startPolling(){
+ clearInterval(pollTimer);clearInterval(snapTimer);
+ poll();
+ pollTimer=setInterval(()=>poll(),12000);
+ setTimeout(takeSnapshot,15000);
+ snapTimer=setInterval(takeSnapshot,300000);
+}
 function cleanupConnection(){clearInterval(pollTimer);clearInterval(snapTimer);chC=null;chT=null}
 function onDisconnect(){
  cleanupConnection();setStatus('Déconnecté.');
@@ -359,8 +388,27 @@ async function reconnect(){
 $('conn').onclick=connectBLE;
 $('disc').onclick=()=>{manualDisconnect=true;clearTimeout(reconnectTimer);cleanupConnection();if(dev?.gatt?.connected)dev.gatt.disconnect();setStatus('Déconnexion demandée.')};
 document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',async()=>{
- if(!chC){showError('VMI non connectée.');return}
- await send(Number(b.dataset.r),Number(b.dataset.v));setTimeout(poll,700);
+ if(!chC||!dev?.gatt?.connected){showError('VMI non connectée.');return}
+ if(manualCommandPending){$('st').textContent='Commande précédente en cours : attends la fin avant d’en envoyer une autre.';return}
+ manualCommandPending=true;
+ const controls=[...document.querySelectorAll('[data-r]')];
+ controls.forEach(x=>x.disabled=true);
+ showError('');
+ $('st').textContent='Envoi de la commande à la VMI…';
+ const reg=Number(b.dataset.r),value=Number(b.dataset.v);
+ const sent=await send(reg,value);
+ if(sent){
+  $('st').textContent='Commande envoyée. Vérification de l’état de la VMI…';
+  await sleep(600);
+  await poll(true);
+  // Laisse le temps aux notifications de revenir avant de réautoriser les commandes.
+  await sleep(1800);
+  $('st').textContent='Commande transmise. Vérifie la vitesse ou le mode affiché.';
+ }else{
+  $('st').textContent='La commande n’a pas pu être envoyée. Consulte le journal Bluetooth.';
+ }
+ manualCommandPending=false;
+ controls.forEach(x=>x.disabled=false);
 }));
 $('clk').onclick=setClock;
 
