@@ -525,7 +525,7 @@ function renderRecommendation(data){
  if(Number.isFinite(delta)){
   if(delta>1)msg+=`L'air entrant est actuellement plus sec en humidité absolue d'environ ${fmt(delta)} g/m³ : le renouvellement d'air a un potentiel d'assèchement.`;
   else if(delta< -1)msg+=`L'air entrant est actuellement plus humide en valeur absolue d'environ ${fmt(Math.abs(delta))} g/m³ : augmenter la vitesse ne garantit pas d'assécher le logement.`;
-  else msg+='L'air entrant et l'air intérieur ont des humidités absolues proches.';
+  else msg+="L'air entrant et l'air intérieur ont des humidités absolues proches.";
  }
  box.textContent=msg;
 }
