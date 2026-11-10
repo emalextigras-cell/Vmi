@@ -120,6 +120,8 @@ input[type="checkbox"]{accent-color:var(--acc);transform:translateY(1px)}
  </div>
  <div id="cmdResult" class="status"></div>
  <div class="row"><button class="outline" id="clk">Synchroniser l'heure VMI</button><button class="outline" id="dlh">Récupérer l'historique VMI</button><span id="dlp" class="note"></span></div>
+ <div id="historySyncInfo" class="advice diagnostic"></div>
+ <p class="note">À chaque connexion, l'application tente automatiquement de récupérer les nouveaux relevés depuis la dernière ligne connue. Pour que cela fonctionne, ouvre cette page et ferme VMI+ au moins une fois avant 28 jours.</p>
 </section>
 
 <section class="card">
@@ -173,11 +175,14 @@ input[type="checkbox"]{accent-color:var(--acc);transform:translateY(1px)}
  <h3>Humidité absolue (g/m³)</h3><div id="chartHA" class="chart"></div>
  <h3>Températures (°C)</h3><div id="chartTemp" class="chart"></div>
  <h3>Régime ventilateur (tr/min)</h3><div id="chartRPM" class="chart"></div>
+ <h3>Débit et vitesse de ventilation</h3><div id="chartAirflow" class="chart"></div>
+ <h3>PWM du ventilateur</h3><div id="chartPWM" class="chart"></div>
+ <h3>Indice d'encrassement du filtre (%)</h3><div id="chartFilter" class="chart"></div>
 </section>
 
 <section class="card">
  <h2>Enregistrement en direct</h2>
- <p class="sub">Un relevé toutes les cinq minutes tant que la page reste ouverte et connectée.</p>
+ <p class="sub">Un relevé toutes les cinq minutes tant que la page reste ouverte et connectée. Après un téléchargement historique, la connexion est rétablie automatiquement.</p>
  <div class="row"><b id="liveCount">0</b> relevés <button class="outline" id="csv">Exporter CSV</button><button class="outline" id="clearLive">Effacer les relevés</button></div>
 </section>
 
@@ -389,7 +394,7 @@ function takeSnapshot(){
  if(!lastSeen.salon||now-lastSeen.salon>90000)return;
  const pf=lastSeen.probes&&now-lastSeen.probes<=90000;
  const row={t:now,st:cur.sal_t,sh:cur.sal_h,t1:pf?cur.s1_t:null,h1:pf?cur.s1_h:null,te:pf?cur.s2_t:null,he:pf?cur.s2_h:null,
-  rpm:null,fil:Number.isFinite(cur.filtre)?cur.filtre:null,vit:Number.isFinite(cur.vit)?cur.vit:null,
+  rpm:null,fil:Number.isFinite(cur.filtre)?cur.filtre:null,vit:Number.isFinite(cur.vit)?cur.vit:null,debit:Number.isFinite(cur.debit)?cur.debit:null,pwm:Number.isFinite(cur.pwm)?cur.pwm:null,
   boost:cur.boost!=null?cur.boost:null,hol:cur.hol!=null?cur.hol:null};
  if(!Number.isFinite(row.st)&&!Number.isFinite(row.sh))return;
  live.push(row);
@@ -415,7 +420,16 @@ function startPolling(){
 function cleanupConnection(){clearInterval(pollTimer);clearInterval(snapTimer);chC=null;chT=null}
 function onDisconnect(){
  cleanupConnection();setStatus('Déconnecté.');
- if(disconnectAfterDownload){disconnectAfterDownload=false;return}
+ /* La coupure de fin d’historique est volontaire, mais l’enregistrement en direct doit reprendre. */
+ if(disconnectAfterDownload){
+  disconnectAfterDownload=false;
+  if(!manualDisconnect&&dev){
+   setStatus('Historique terminé, reconnexion pour les relevés en direct…');
+   clearTimeout(reconnectTimer);
+   reconnectTimer=setTimeout(reconnect,1500);
+  }
+  return;
+ }
  if(!manualDisconnect&&dev){setStatus('Connexion perdue, tentative de reconnexion…');clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnect,4000)}
 }
 async function connectCharacteristics(server){
@@ -497,8 +511,8 @@ function parseCell(v){
 }
 function recFrom(r){
  const p=parseCell(r[0]);if(!p)return null;
- const rec={t:p.t,rk:p.rk,d:num(r[11]),st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[20]),vit:null,boost:null,hol:null};
- return ['st','sh','t1','h1','te','he','rpm','fil'].some(k=>rec[k]!=null)?rec:null;
+ const rec={t:p.t,rk:p.rk,d:num(r[11]),st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[21]),vit:num(r[22]),debit:num(r[23]),pwm:num(r[26]),boost:null,hol:null};
+ return ['st','sh','t1','h1','te','he','rpm','fil','vit','debit','pwm'].some(k=>rec[k]!=null)?rec:null;
 }
 const dayNo=t=>{const d=new Date(t);return Math.floor(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())/DAY)};
 const modeOf=a=>{const m=new Map();let best,bc=0;for(const x of a){const c=(m.get(x)||0)+1;m.set(x,c);if(c>bc){bc=c;best=x}}return best};
@@ -554,6 +568,13 @@ function ingest(recs,label){
  log($('importInfo').textContent);
  render();
 }
+function updateHistorySyncInfo(){
+ const el=$('historySyncInfo');if(!el)return;
+ let t=null;try{t=Number(localStorage.getItem('vmi_last_history_sync'))||null}catch(e){}
+ if(!t){el.textContent='Aucune synchronisation historique enregistrée dans ce navigateur. Connecte-toi pour lancer la récupération automatique.';return}
+ const age=(Date.now()-t)/DAY, remaining=Math.max(0,28-age);
+ el.textContent=`Dernière synchronisation : ${new Date(t).toLocaleString('fr-FR')}. ${remaining<3?'Il est conseillé de synchroniser maintenant.':`Prochaine synchronisation conseillée dans environ ${Math.ceil(remaining)} jours.`}`;
+}
 /* Téléchargement de l'historique : arrêt au premier relevé déjà connu. */
 const sigOf=r=>r.rk+'|'+r.d;
 function parseDownloadLine(line){
@@ -567,6 +588,8 @@ function finishDownload(reachedCut,timeout=false){
  if(!download.on)return;download.on=false;clearTimeout(download.timeout);
  const count=download.rows.length;if(count)ingest(download.rows,'Téléchargement');
  $('dlh').disabled=false;setCommandsDisabled(false);
+ try{localStorage.setItem('vmi_last_history_sync',String(Date.now()))}catch(e){}
+ updateHistorySyncInfo();
  $('dlp').textContent=`Terminé : ${count} ${plural(count,'nouveau relevé lu','nouveaux relevés lus')}${reachedCut?' · historique à jour':timeout?(download.got?' · arrêt après une pause de 20 s':' · aucune réponse de la VMI'):(download.sigs.size?' · attention : trou possible avant la dernière ligne mémorisée':' · historique complet')}`;
  if(reachedCut&&dev&&dev.gatt&&dev.gatt.connected){disconnectAfterDownload=true;dev.gatt.disconnect()}
 }
@@ -594,7 +617,7 @@ $('histBtn').onclick=()=>{source='hist';render()};$('liveBtn').onclick=()=>{sour
 $('dayPicker').onchange=e=>{selectedDate=e.target.value||null;render()};$('prev').onclick=()=>{selectedDate=shiftDay(selectedDate,-1);$('dayPicker').value=selectedDate;render()};$('next').onclick=()=>{selectedDate=shiftDay(selectedDate,1);$('dayPicker').value=selectedDate;render()};
 document.querySelectorAll('[data-days]').forEach(b=>b.onclick=()=>{daysSetting=Number(b.dataset.days);selectedDate=null;$('dayPicker').value='';render()});
 $('clearLive').onclick=async()=>{if(confirm('Effacer les relevés en direct ?')){live=[];await dbSet('live',[]);$('liveCount').textContent='0';render()}};
-$('csv').onclick=()=>{const keys=['t','st','sh','t1','h1','te','he','rpm','fil','vit','boost','hol'];const rows=[keys.join(';'),...live.map(r=>keys.map(k=>k==='t'?new Date(r.t).toISOString():(r[k]!=null?r[k]:'')).join(';'))];downloadText(rows.join('\n'),'vmi-purevent-live.csv','text/csv;charset=utf-8')};
+$('csv').onclick=()=>{const keys=['t','st','sh','t1','h1','te','he','rpm','fil','vit','debit','pwm','boost','hol'];const rows=[keys.join(';'),...live.map(r=>keys.map(k=>k==='t'?new Date(r.t).toISOString():(r[k]!=null?r[k]:'')).join(';'))];downloadText(rows.join('\n'),'vmi-purevent-live.csv','text/csv;charset=utf-8')};
 function downloadText(content,name,type){const blob=new Blob(['\ufeff',content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 
 /* ---------- Graphiques SVG ---------- */
@@ -650,6 +673,9 @@ function renderCharts(data){
  drawChart('chartHA','Humidité absolue',[seriesFor(data,'sh','Salon',COLORS[0],r=>absoluteHumidity(r.st,r.sh)),seriesFor(data,'he','Air entrant',COLORS[2],r=>absoluteHumidity(r.te,r.he))]);
  drawChart('chartTemp','Températures',[seriesFor(data,'st','Salon',COLORS[0]),seriesFor(data,'t1','Sonde résistances',COLORS[1]),seriesFor(data,'te','Air entrant',COLORS[2])]);
  drawChart('chartRPM','Régime ventilateur',[seriesFor(data,'rpm','Régime',COLORS[0])]);
+ drawChart('chartAirflow','Débit et vitesse de ventilation',[seriesFor(data,'debit','Débit',COLORS[2]),seriesFor(data,'vit','Vitesse',COLORS[0])]);
+ drawChart('chartPWM','PWM du ventilateur',[seriesFor(data,'pwm','PWM',COLORS[1])]);
+ drawChart('chartFilter',"Indice d'encrassement du filtre",[seriesFor(data,'fil','Filtre',COLORS[0])]);
 }
 
 /* Comparaison prudente par vitesse (médianes) */
@@ -720,6 +746,7 @@ $('themeBtn').onclick=()=>{
 };
 try{const theme=localStorage.getItem('vmi_theme');if(theme)document.documentElement.dataset.theme=theme}catch(e){}
 if(!navigator.bluetooth)showError('Web Bluetooth indisponible : ouvre cette page en HTTPS dans Chrome sur Android.');
+updateHistorySyncInfo();
 init();
 </script>
 </body>
