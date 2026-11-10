@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#245b43">
-<title>VMI Purevent – Supervision & optimisation (corrigé)</title>
+<title>VMI Purevent – Supervision & optimisation</title>
 <link rel="manifest" href="manifest.json">
 <style>
 :root{
@@ -25,7 +25,7 @@ h3{font-size:.93rem;margin:0 0 6px}
 .sub{color:var(--mut);font-size:.88rem;margin:0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0;box-shadow:var(--shadow)}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-@media(min-width:650px){.grid.cols3{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:650px){.grid.cols3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid.cols4{grid-template-columns:repeat(4,minmax(0,1fr))}}
 .metric{padding:10px;border:1px solid var(--line);border-radius:9px;min-width:0}
 .metric b{display:block;font-size:1.55rem;line-height:1.25;font-variant-numeric:tabular-nums}
 .metric span{display:block;color:var(--mut);font-size:.78rem}
@@ -151,7 +151,7 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <label for="fx">Importer un export VMI+ (.xlsx/.xls) :</label><input type="file" id="fx" accept=".xlsx,.xls">
  </div>
  <div class="row">
-  <b>Jour :</b><button class="outline" id="prev" aria-label="Jour précédent">◀</button><input type="date" id="dayPicker"><button class="outline" id="next" aria-label="Jour suivant">▶</button>
+  <b>Jour :</b><button class="outline" id="prev">◀</button><input type="date" id="dayPicker"><button class="outline" id="next">▶</button>
  </div>
  <div class="row">
   <b>Période :</b><button class="outline" data-days="7">7 jours</button><button class="outline" data-days="30">30 jours</button><button class="outline" data-days="90">90 jours</button><button class="outline" data-days="0">Tout</button>
@@ -160,6 +160,7 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <b>Source :</b><button class="outline" id="histBtn">Historique VMI</button><button class="outline" id="liveBtn">En direct</button><button class="outline" id="clearImport">Effacer l'import</button>
  </div>
  <div id="historyStatus" class="status"></div>
+ <div id="importInfo" class="note"></div>
  <h3>Humidité relative (%)</h3><div id="chartRH" class="chart"></div>
  <h3>Humidité absolue (g/m³)</h3><div id="chartHA" class="chart"></div>
  <h3>Températures (°C)</h3><div id="chartTemp" class="chart"></div>
@@ -176,10 +177,10 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
  <details>
   <summary>Journal Bluetooth brut</summary>
   <div class="row"><button class="outline" id="copyLog">Copier le journal</button><button class="outline" id="clearLog">Effacer le journal</button></div>
-  <pre id="log" aria-live="polite"></pre>
+  <pre id="log"></pre>
  </details>
 </section>
-<footer>VMI Purevent · Les commandes sont envoyées uniquement après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
+<footer>VMI Purevent · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
 </main>
 
 <script>
@@ -194,30 +195,32 @@ const CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const pad=n=>String(n).padStart(2,'0');
+const DAY=864e5;
 const localDay=()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
 const dayStart=s=>{const [y,m,d]=s.split('-').map(Number);return new Date(y,m-1,d).getTime()};
 const shiftDay=(s,k)=>{const d=new Date(dayStart(s||localDay()));d.setDate(d.getDate()+k);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
 const fmt=v=>Number.isFinite(v)?v.toFixed(1):'–';
 const num=v=>{if(typeof v==='number')return Number.isFinite(v)?v:null;if(typeof v!=='string')return null;const n=parseFloat(v.trim().replace(',','.'));return Number.isFinite(n)?n:null};
+const MIN_VALID=new Date(2025,0,1).getTime();   /* avant cette date, l'horloge de la VMI est forcément fausse */
+const HIST_MAX=100000;
 
 let dev=null,chC=null,chT=null,pollTimer=null,snapTimer=null,reconnectTimer=null;
-let manualDisconnect=false,commandQueue=Promise.resolve(),manualCommandPending=false,polling=false;
+let manualDisconnect=false,commandQueue=Promise.resolve(),manualCommandPending=false,polling=false,autoDone=false;
 let cur={},lastSeen={},live=[],hist=[],source='hist',selectedDate=null,daysSetting=30;
 let logLines=[],dlFrames=0;
-let download={on:false,rows:[],buf:'',total:0,cut:null,got:false,lastPacket:0,timeout:null};
+let download={on:false,rows:[],buf:'',total:0,sigs:new Set(),got:false,lastPacket:0,timeout:null};
 const DB='VMI_PUREVENT_DB',STORE='data';
-const HIST_MAX=100000; /* limite de taille de l'historique pour éviter de saturer IndexedDB */
+const connected=()=>!!(chC&&dev&&dev.gatt&&dev.gatt.connected);
 
 function showError(e){$('err').textContent=e?String(e.message||e):''}
 function log(s){logLines.push(`${new Date().toLocaleTimeString('fr-FR')} ${s}`);if(logLines.length>300)logLines.shift();const p=$('log');p.textContent=logLines.slice(-70).join('\n');p.scrollTop=p.scrollHeight}
-function setStatus(s,connected=false){$('st').textContent=s;$('bleState').textContent=connected?'Connecté':'Déconnecté';$('conn').disabled=connected;$('disc').disabled=!connected}
-function connected(){return !!(chC&&dev&&dev.gatt&&dev.gatt.connected)}
+function setStatus(s,isConnected=false){$('st').textContent=s;$('bleState').textContent=isConnected?'Connecté':'Déconnecté';$('conn').disabled=isConnected;$('disc').disabled=!isConnected}
 
 /* Stockage local (IndexedDB) */
-function openDB(name=DB,version=1,upgrade=true){
+function openDB(){
  return new Promise((resolve,reject)=>{
-  const req=indexedDB.open(name,version);
-  if(upgrade)req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE)};
+  const req=indexedDB.open(DB,1);
+  req.onupgradeneeded=()=>{const db=req.result;if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE)};
   req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error);
  });
 }
@@ -226,8 +229,7 @@ async function db(){if(!dbPromise)dbPromise=openDB().catch(e=>{dbPromise=null;th
 async function dbGet(k){try{const d=await db();return await new Promise((res,rej)=>{const r=d.transaction(STORE,'readonly').objectStore(STORE).get(k);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}catch(e){log('IndexedDB lecture : '+e.message);return null}}
 async function dbSet(k,v){try{const d=await db();await new Promise((res,rej)=>{const tx=d.transaction(STORE,'readwrite');tx.objectStore(STORE).put(v,k);tx.oncomplete=res;tx.onerror=()=>rej(tx.error);tx.onabort=()=>rej(tx.error)})}catch(e){log('IndexedDB écriture : '+e.message)}}
 
-/* Les anciennes versions mémorisaient l'heure affichée par la VMI comme si c'était de l'UTC.
-   On la reconvertit en vrai instant local. */
+/* Reprise des données des anciennes versions (heure affichée mémorisée comme de l'UTC) */
 const wallUtcToLocal=t=>{const d=new Date(t);return new Date(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds()).getTime()};
 const fromOldRow=a=>({t:wallUtcToLocal(a[0]),st:a[1],sh:a[2],t1:a[3],h1:a[4],te:a[5],he:a[6],rpm:a[7],fil:a[8],vit:null,boost:null,hol:null});
 async function readOldDatabase(){
@@ -253,14 +255,17 @@ async function init(){
   }
   if(!hist.length){try{const x=JSON.parse(localStorage.getItem('vmi_hist')||'[]');if(Array.isArray(x))hist=x.map(fromOldRow)}catch(e){}}
   if(!live.length){try{const x=JSON.parse(localStorage.getItem('vmi_live')||'[]');if(Array.isArray(x))live=x}catch(e){}}
-  hist.sort((a,b)=>a.t-b.t);
-  if(hist.length){pruneHist();await dbSet('hist',hist)}
-  if(live.length)await dbSet('live',live);
   await dbSet('migrated',true);
  }
+ /* Les relevés datés d'avant 2025 ont une date fausse (horloge de la VMI) et ne peuvent pas être corrigés
+    sans leur compteur de jours : on les retire, un nouvel import ou téléchargement les rétablit avec la bonne date. */
+ const bad=hist.filter(r=>!(r&&r.t>=MIN_VALID)).length;
+ if(bad){hist=hist.filter(r=>r&&r.t>=MIN_VALID);$('importInfo').textContent=`${bad} anciens relevés à date invalide ont été retirés. Réimporte ton export VMI+ ou récupère l’historique : ils reviendront avec la bonne date.`}
+ hist.sort((a,b)=>a.t-b.t);
+ await dbSet('hist',hist);if(live.length)await dbSet('live',live);
  $('liveCount').textContent=live.length;render();
 }
-function pruneHist(){ /* supprime les relevés sans aucune donnée exploitable, puis les plus anciens au-delà de la limite */
+function pruneHist(){
  hist=hist.filter(r=>r&&(r.st!=null||r.sh!=null||r.te!=null||r.he!=null||r.rpm!=null||r.t1!=null||r.h1!=null));
  if(hist.length>HIST_MAX){hist=hist.slice(hist.length-HIST_MAX);log(`Historique limité à ${HIST_MAX} relevés (les plus anciens supprimés).`)}
 }
@@ -288,9 +293,9 @@ const hex=a=>Array.from(a,x=>x.toString(16).padStart(2,'0')).join('');
 function writeFrame(bytes){
  const task=commandQueue.then(async()=>{
   if(!connected())throw new Error('VMI non connectée');
-  if(chC.properties?.write && typeof chC.writeValueWithResponse==='function'){
+  if(chC.properties&&chC.properties.write&&typeof chC.writeValueWithResponse==='function'){
    await chC.writeValueWithResponse(bytes);
-  }else if(chC.properties?.writeWithoutResponse && typeof chC.writeValueWithoutResponse==='function'){
+  }else if(chC.properties&&chC.properties.writeWithoutResponse&&typeof chC.writeValueWithoutResponse==='function'){
    await chC.writeValueWithoutResponse(bytes);
   }else if(typeof chC.writeValue==='function'){
    await chC.writeValue(bytes);
@@ -306,7 +311,6 @@ function writeFrame(bytes){
   log('Erreur commande : '+(e.message||e));
   return false;
  });
- /* la chaîne continue même en cas d'échec, sans empiéter sur l'envoi suivant */
  commandQueue=result.then(()=>{},()=>{});
  return result;
 }
@@ -314,8 +318,7 @@ const send=(reg,val)=>writeFrame(frame(reg,val));
 async function setClock(){if(!chC){showError('Connecte-toi d’abord à la VMI.');return false}const d=new Date();const ok=await writeFrame(timeFrame(d));$('dlp').textContent=ok?'Heure envoyée : '+d.toLocaleString('fr-FR'):'Heure non envoyée.';return ok}
 
 function onNotification(ev){
- try{handleNotification(ev)}
- catch(e){log('Erreur de décodage d’une trame : '+(e.message||e))}
+ try{handleNotification(ev)}catch(e){log('Erreur de décodage d’une trame : '+(e.message||e))}
 }
 function handleNotification(ev){
  const v=ev.target.value;
@@ -324,16 +327,16 @@ function handleNotification(ev){
  const type=a[2],now=Date.now();
  if(type===0x30){
   if(!download.on)return;
+  if(a.length<14){log('Trame d’historique trop courte, ignorée.');return}
   dlFrames++;if(dlFrames%200===1)log(`< trames d’historique reçues : ${dlFrames}`);
   download.got=true;download.lastPacket=now;
-  if(a.length<14){log('Trame d’historique trop courte, ignorée.');return}
   let end=14;while(end<a.length&&a[end]!==0)end++;
   download.buf+=new TextDecoder('latin1').decode(a.slice(14,end));
   const lines=download.buf.split('\n');download.buf=lines.pop();lines.forEach(parseDownloadLine);
   if(download.on){
-   $('dlp').textContent=`${download.rows.length} nouvelles lignes (${a.length>10?(a[9]|(a[10]<<8)):'?'} / ${download.total||'?'} lues)`;
+   $('dlp').textContent=`${download.rows.length} nouvelles lignes (${a[9]|(a[10]<<8)} / ${download.total||'?'} lues)`;
    armDownloadTimeout();
-   if(a.length>13&&a[13]===1){if(download.buf.trim())parseDownloadLine(download.buf);finishDownload(false)}
+   if(a[13]===1){if(download.buf.trim())parseDownloadLine(download.buf);finishDownload(false)}
   }
   return;
  }
@@ -358,10 +361,8 @@ function handleNotification(ev){
  updateLiveMetrics();
 }
 function updateLiveMetrics(){
- /* âge depuis la mesure la plus récente (et non la plus ancienne) */
  const freshest=Math.max(lastSeen.salon||0,lastSeen.probes||0);
- const age=Date.now()-freshest;
- $('sampleAge').textContent=lastSeen.salon&&lastSeen.probes?'Dernières mesures reçues : '+Math.max(0,Math.round(age/1000))+' s':'Mesures partielles : en attente des deux trames capteurs.';
+ $('sampleAge').textContent=lastSeen.salon&&lastSeen.probes?'Dernières mesures reçues : '+Math.max(0,Math.round((Date.now()-freshest)/1000))+' s':'Mesures partielles : en attente des deux trames capteurs.';
  const r={st:cur.sal_t,sh:cur.sal_h,te:cur.s2_t,he:cur.s2_h};
  const p=psychro(r);
  $('haSalon').textContent=fmt(p.haIn);$('haExt').textContent=fmt(p.haOut);$('dew').textContent=fmt(p.dewIn);$('dewExt').textContent=fmt(p.dewOut);
@@ -375,37 +376,27 @@ function updateLiveMetrics(){
  else{box.className='advice';box.textContent='Les humidités absolues sont proches. L’effet asséchant potentiel de l’air entrant est limité à cet instant.'}
 }
 
-/* Relevés en direct : on enregistre dès que le salon est frais, avec les sondes si disponibles,
-   pour ne plus perdre de relevés quand une seule trame capteur manque. */
+/* Relevés en direct : dès que le salon est frais, avec les sondes si elles le sont aussi */
 function takeSnapshot(){
  const now=Date.now();
  if(!lastSeen.salon||now-lastSeen.salon>90000)return;
- const probesFresh=lastSeen.probes&&now-lastSeen.probes<=90000;
- const row={t:now,st:cur.sal_t,sh:cur.sal_h,
-  t1:probesFresh?cur.s1_t:null,h1:probesFresh?cur.s1_h:null,
-  te:probesFresh?cur.s2_t:null,he:probesFresh?cur.s2_h:null,
-  rpm:null,fil:Number.isFinite(cur.filtre)?cur.filtre:null,
-  vit:Number.isFinite(cur.vit)?cur.vit:null,
+ const pf=lastSeen.probes&&now-lastSeen.probes<=90000;
+ const row={t:now,st:cur.sal_t,sh:cur.sal_h,t1:pf?cur.s1_t:null,h1:pf?cur.s1_h:null,te:pf?cur.s2_t:null,he:pf?cur.s2_h:null,
+  rpm:null,fil:Number.isFinite(cur.filtre)?cur.filtre:null,vit:Number.isFinite(cur.vit)?cur.vit:null,
   boost:cur.boost!=null?cur.boost:null,hol:cur.hol!=null?cur.hol:null};
- const core=['st','sh'].some(k=>Number.isFinite(row[k]));
- if(!core)return;
+ if(!Number.isFinite(row.st)&&!Number.isFinite(row.sh))return;
  live.push(row);
  if(live.length>10000)live.splice(0,live.length-10000);
  dbSet('live',live);$('liveCount').textContent=live.length;
  if(source==='live')render();
 }
 
-/* Polling : pas de chevauchement, on s'arrête dès que la connexion tombe */
+/* Scrutation : pas de chevauchement, arrêt dès que la connexion tombe */
 async function poll(force=false){
  if(polling||!connected()||download.on||(manualCommandPending&&!force))return;
  polling=true;
- try{
-  for(const r of [3,6,7]){
-   if(!connected()||download.on)break;
-   const ok=await send(r,0);
-   if(!ok)break; /* arrête immédiatement si l'envoi a échoué : la file ne s'empile plus */
-  }
- }finally{polling=false}
+ try{for(const r of [3,6,7]){if(!connected()||download.on)break;const ok=await send(r,0);if(!ok)break}}
+ finally{polling=false}
 }
 function startPolling(){
  clearInterval(pollTimer);clearInterval(snapTimer);
@@ -436,19 +427,19 @@ async function connectBLE(){
   setStatus('Connexion à '+(dev.name||'la VMI')+'…');
   const server=await dev.gatt.connect();await connectCharacteristics(server);
   setStatus('Connecté à '+(dev.name||'la VMI')+'.',true);startPolling();
-  setTimeout(autoHistory,3000); /* téléchargement automatique une fois les trames d'état reçues */
+  autoDone=false;setTimeout(autoHistory,3000);
  }catch(e){showError(e);setStatus('Connexion impossible.')}
 }
 async function reconnect(){
  if(manualDisconnect||!dev)return;
- try{const server=await dev.gatt.connect();await connectCharacteristics(server);setStatus('Reconnecté à '+(dev.name||'la VMI')+'.',true);startPolling();setTimeout(autoHistory,3000)}
+ try{const server=await dev.gatt.connect();await connectCharacteristics(server);setStatus('Reconnecté à '+(dev.name||'la VMI')+'.',true);startPolling()}
  catch(e){log('Reconnexion échouée : '+e.message);clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnect,7000)}
 }
 $('conn').onclick=connectBLE;
 $('disc').onclick=()=>{manualDisconnect=true;clearTimeout(reconnectTimer);cleanupConnection();if(dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();setStatus('Déconnexion demandée.')};
 
-/* Boutons de commande : une commande à la fois, désactivés pendant un téléchargement. */
-const EXPECT={24:(v)=>['vit',v+1,'Vitesse '+(v+1)],25:(v)=>['boost',v,'Boost '+(v?'activé':'arrêté')],26:(v)=>['hol',v,'Mode vacances '+(v?'activé':'arrêté')]};
+/* Boutons de commande : une commande à la fois, avec vérification de l'état renvoyé par la VMI */
+const EXPECT={24:v=>['vit',v+1,'Vitesse '+(v+1)],25:v=>['boost',v,'Boost '+(v?'activé':'arrêté')],26:v=>['hol',v,'Mode vacances '+(v?'activé':'arrêté')]};
 document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',async()=>{
  if(manualCommandPending||download.on)return;
  if(!connected()){showError('VMI non connectée.');$('cmdResult').textContent='';return}
@@ -476,106 +467,100 @@ document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',asyn
   manualCommandPending=false;controls.forEach(x=>x.disabled=false);
  }
 }));
-function setCommandsDisabled(dis){document.querySelectorAll('[data-r]').forEach(x=>x.disabled=dis)}
+const setCommandsDisabled=dis=>document.querySelectorAll('[data-r]').forEach(x=>x.disabled=dis);
 $('clk').onclick=setClock;
 
-/* Dates : l'export tableur de VMI+ inverse jour et mois dans les cellules de type date
-   (jour ≤ 12) ; les cellules texte et le flux Bluetooth sont corrects. */
-function parseDate(v){
+/* ---------- Dates ----------
+   - l'export tableur inverse jour et mois dans les cellules de type date (jour ≤ 12) ;
+   - surtout, la VMI date parfois ses relevés avec une horloge fausse (par ex. avril 2018) pendant des périodes
+     entières. Son compteur « jours de fonctionnement » reste juste : on s'en sert pour retrouver la vraie date. */
+function parseCell(v){
  if(typeof v==='number'&&v>30000&&window.XLSX){
   const c=XLSX.SSF.parse_date_code(v);if(!c)return null;
-  const swapped=c.d<=12;
-  return new Date(c.y,(swapped?c.d:c.m)-1,swapped?c.m:c.d,c.H,c.M,Math.round(c.S)).getTime();
+  const sw=c.d<=12,Y=c.y,Mo=sw?c.d:c.m,Da=sw?c.m:c.d,S=Math.round(c.S);
+  return {t:new Date(Y,Mo-1,Da,c.H,c.M,S).getTime(),rk:`${pad(Da)}/${pad(Mo)}/${Y} ${pad(c.H)}:${pad(c.M)}:${pad(S)}`};
  }
  if(typeof v==='string'){
   const m=v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if(m)return new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime();
+  if(m)return {t:new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0)).getTime(),rk:`${pad(+m[1])}/${pad(+m[2])}/${m[3]} ${pad(+m[4])}:${m[5]}:${pad(+(m[6]||0))}`};
  }
  return null;
 }
+function recFrom(r){
+ const p=parseCell(r[0]);if(!p)return null;
+ const rec={t:p.t,rk:p.rk,d:num(r[11]),st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[20]),vit:null,boost:null,hol:null};
+ return ['st','sh','t1','h1','te','he','rpm','fil'].some(k=>rec[k]!=null)?rec:null;
+}
+const dayNo=t=>{const d=new Date(t);return Math.floor(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())/DAY)};
+const modeOf=a=>{const m=new Map();let best,bc=0;for(const x of a){const c=(m.get(x)||0)+1;m.set(x,c);if(c>bc){bc=c;best=x}}return best};
+/* Corrige en place les relevés datés d'avant 2025. Retourne {fixed, kept}. */
+function fixClock(recs){
+ const known=hist.concat(recs).filter(r=>r.t>=MIN_VALID&&Number.isFinite(r.d)&&new Date(r.t).getHours()>=10);
+ const E0=modeOf(known.map(r=>dayNo(r.t)-r.d));
+ const bad=recs.filter(r=>r.t<MIN_VALID).sort((a,b)=>a.t-b.t);
+ let fixed=0;
+ if(E0!==undefined&&bad.length){
+  const eps=[];let cur=[];
+  for(const r of bad){if(cur.length&&r.t-cur[cur.length-1].t>3*DAY){eps.push(cur);cur=[]}cur.push(r)}
+  if(cur.length)eps.push(cur);
+  for(const ep of eps){
+   const k=modeOf(ep.filter(r=>Number.isFinite(r.d)&&new Date(r.t).getHours()>=10).map(r=>E0+r.d-dayNo(r.t)));
+   if(k===undefined)continue;
+   for(const r of ep){const x=new Date(r.t);r.t=new Date(x.getFullYear(),x.getMonth(),x.getDate()+k,x.getHours(),x.getMinutes(),x.getSeconds()).getTime();r.fixed=true;fixed++}
+  }
+ }
+ return {fixed,kept:recs.filter(r=>r.t>=MIN_VALID)};
+}
+function ingest(recs,label){
+ const {fixed,kept}=fixClock(recs);
+ const map=new Map(hist.map(r=>[r.t,r]));
+ kept.forEach(r=>map.set(r.t,r));
+ hist=[...map.values()].sort((a,b)=>a.t-b.t);
+ pruneHist();dbSet('hist',hist);source='hist';selectedDate=null;$('dayPicker').value='';
+ const lost=recs.length-kept.length;
+ $('importInfo').textContent=`${label} : ${recs.length} relevés lus${fixed?`, dont ${fixed} dont la date a été corrigée (horloge de la VMI fausse)`:''}${lost?`, ${lost} ignorés (date invalide impossible à corriger)`:''}.`;
+ log($('importInfo').textContent);
+ render();
+}
+
+/* Téléchargement de l'historique : on s'arrête au premier relevé déjà connu, puis on coupe la connexion
+   pour interrompre le flux de la VMI (elle ne sait pas s'arrêter seule). */
+const sigOf=r=>r.rk+'|'+r.d;
 function parseDownloadLine(line){
  if(!download.on||!/^\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2};/.test(line))return;
- const fields=line.split(';'),t=parseDate(fields[0]);if(t==null)return;
- if(download.cut!==null&&t<=download.cut){finishDownload(true);return}
- download.rows.push(fields);
+ const f=line.split(';'),p=parseCell(f[0]);if(!p)return;
+ if(download.sigs.size&&download.sigs.has(p.rk+'|'+num(f[11]))){finishDownload(true);return}
+ const rec=recFrom(f);if(rec)download.rows.push(rec);
 }
-function armDownloadTimeout(){
- clearTimeout(download.timeout);
- download.timeout=setTimeout(()=>{if(download.on)finishDownload(false,true)},20000);
-}
+function armDownloadTimeout(){clearTimeout(download.timeout);download.timeout=setTimeout(()=>{if(download.on)finishDownload(false,true)},20000)}
 function finishDownload(reachedCut,timeout=false){
  if(!download.on)return;
  download.on=false;clearTimeout(download.timeout);
  const count=download.rows.length;
- if(count)ingestRows(download.rows,0);
+ if(count)ingest(download.rows,'Téléchargement');
  $('dlh').disabled=false;setCommandsDisabled(false);
- $('dlp').textContent=`Terminé : ${count} nouvelles lignes${reachedCut?' · historique à jour':timeout?(download.got?' · arrêt après une pause de 20 s':' · aucune réponse de la VMI'):' · téléchargement terminé'}`;
- if(reachedCut)log('Historique à jour (téléchargement automatique arrêté sur place).');
- setTimeout(verifyHistory,2000);
+ $('dlp').textContent=`Terminé : ${count} nouvelles lignes${reachedCut?' · historique à jour':timeout?(download.got?' · arrêt après une pause de 20 s':' · aucune réponse de la VMI'):(download.sigs.size?' · attention : trou possible avant la dernière ligne mémorisée':' · historique complet')}`;
+ if(reachedCut&&dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();
 }
-async function startDownload(auto=false,full=false){
+async function startDownload(auto=false){
  if(!chC){if(!auto)showError('Connecte-toi d’abord à la VMI.');return}
  if(download.on)return;
  showError('');dlFrames=0;
- /* full=true : on récupère TOUT l'historique, sans s'arrêter aux données déjà présentes,
-    pour combler les trous d'un téléchargement précédent (trames perdues en Bluetooth). */
- download={on:true,rows:[],buf:'',total:0,cut:full?null:(hist.length?hist.reduce((m,r)=>Math.max(m,r.t),0):null),got:false,lastPacket:Date.now(),timeout:null};
+ download={on:true,rows:[],buf:'',total:0,sigs:new Set(hist.filter(r=>r.rk&&Number.isFinite(r.d)).map(sigOf)),got:false,lastPacket:Date.now(),timeout:null};
  $('dlh').disabled=true;setCommandsDisabled(true);
- $('dlp').textContent=auto?(full?'Récupération des valeurs manquantes…':'Téléchargement automatique de l’historique…'):'Démarrage du téléchargement…';
+ $('dlp').textContent=auto?'Téléchargement automatique de l’historique…':'Démarrage du téléchargement…';
  const ok=await setClock();
  if(!ok){download.on=false;$('dlh').disabled=false;setCommandsDisabled(false);return}
  await send(0x2c,0);await send(0x20,0);await send(0x22,0);armDownloadTimeout();
 }
 $('dlh').onclick=()=>startDownload(false);
-/* Téléchargement automatique de l'historique dès que la connexion est établie. */
 function autoHistory(){
- if(download.on||!connected())return;
- log('Téléchargement automatique de l’historique…');
+ if(autoDone||download.on||!connected())return;
+ autoDone=true; /* une seule fois par connexion : pas de boucle déconnexion/reconnexion */
  startDownload(true).catch(e=>log('Téléchargement automatique impossible : '+(e.message||e)));
 }
 
-/* Détection et récupération des valeurs manquantes : si l'historique enregistré contient
-   des trous (écart anormalement grand entre deux relevés), la VMI les a probablement
-   encore en mémoire : on relance un téléchargement complet pour les récupérer. */
-let repairDone=false;
-function findHoles(){
- const ts=hist.map(r=>r.t).sort((a,b)=>a-b);
- if(ts.length<5)return [];
- const dts=[];for(let i=1;i<ts.length;i++)dts.push(ts[i]-ts[i-1]);
- const sorted=[...dts].sort((a,b)=>a-b);
- const med=sorted[Math.floor(sorted.length/2)];
- if(!med||!Number.isFinite(med))return [];
- const holes=[];const lim=Math.max(3*med,3600000); /* trou = plus de 3× l'intervalle habituel (min. 1 h) */
- for(let i=1;i<ts.length;i++)if(ts[i]-ts[i-1]>lim)holes.push({from:ts[i-1],to:ts[i],hours:(ts[i]-ts[i-1])/3600000});
- return holes;
-}
-function verifyHistory(){
- if(repairDone||download.on||!connected()||!chC)return;
- const holes=findHoles();
- if(!holes.length)return;
- repairDone=true; /* une seule tentative de récupération par session, pas de boucle */
- const txt=holes.map(h=>`du ${new Date(h.from).toLocaleString('fr-FR')} au ${new Date(h.to).toLocaleString('fr-FR')} (~${h.hours.toFixed(1)} h)`).join(' ; ');
- log(`${holes.length} trou(s) détecté(s) dans l'historique : ${txt}. Relance d'un téléchargement complet pour récupérer les valeurs manquantes.`);
- $('dlp').textContent='Valeurs manquantes détectées : récupération…';
- startDownload(true,true).catch(e=>log('Récupération impossible : '+(e.message||e)));
-}
-
-/* Import tableur : les lignes sans aucune valeur exploitable ne sont plus enregistrées
-   (elles créaient des trous et des « valeurs manquantes » dans les graphiques). */
-function ingestRows(rows,start=4){
- const map=new Map(hist.map(r=>[r.t,r]));
- let added=0;
- for(let i=start;i<rows.length;i++){
-  const r=rows[i],t=parseDate(r&&r[0]);if(t==null)continue;
-  const rec={t,st:num(r[117]),sh:num(r[118]),t1:num(r[40]),h1:num(r[41]),te:num(r[43]),he:num(r[44]),rpm:num(r[25]),fil:num(r[20]),vit:null,boost:null,hol:null};
-  const hasData=['st','sh','t1','h1','te','he','rpm','fil'].some(k=>rec[k]!=null);
-  if(!hasData)continue;
-  map.set(t,rec);added++;
- }
- hist=[...map.values()].sort((a,b)=>a.t-b.t);
- pruneHist();dbSet('hist',hist);source='hist';selectedDate=null;$('dayPicker').value='';render();
- log(`Import : ${added} nouveaux relevés, ${hist.length} au total.`);
-}
+/* Import tableur */
 $('fx').onchange=async e=>{
  const file=e.target.files&&e.target.files[0];if(!file)return;showError('');
  try{
@@ -583,11 +568,13 @@ $('fx').onchange=async e=>{
   const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:false});
   const sheet=wb.Sheets[wb.SheetNames[0]];
   if(!sheet)throw new Error('Aucune feuille trouvée.');
-  ingestRows(XLSX.utils.sheet_to_json(sheet,{header:1,raw:true,defval:''}));
+  const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:true,defval:''});
+  const recs=[];for(let i=4;i<rows.length;i++){const r=recFrom(rows[i]);if(r)recs.push(r)}
+  ingest(recs,'Import');
  }catch(err){showError('Import impossible : '+err.message)}
  e.target.value='';
 };
-$('clearImport').onclick=async()=>{if(confirm('Effacer tout l\'historique importé ?')){hist=[];await dbSet('hist',[]);render()}};
+$('clearImport').onclick=async()=>{if(confirm('Effacer tout l’historique importé ?')){hist=[];await dbSet('hist',[]);$('importInfo').textContent='';render()}};
 $('histBtn').onclick=()=>{source='hist';render()};
 $('liveBtn').onclick=()=>{source='live';render()};
 $('dayPicker').onchange=e=>{selectedDate=e.target.value||null;render()};
@@ -605,9 +592,9 @@ function downloadText(content,name,type){
  a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-/* Graphiques SVG */
+/* ---------- Graphiques SVG ---------- */
 function selectedData(){
- const data=(source==='live'?live:hist).slice().sort((a,b)=>a.t-b.t);
+ const data=(source==='live'?live:hist).filter(r=>r.t>=MIN_VALID).sort((a,b)=>a.t-b.t);
  if(selectedDate){const start=dayStart(selectedDate),end=start+86400000;return data.filter(r=>r.t>=start&&r.t<end)}
  if(daysSetting&&data.length){const end=data[data.length-1].t;return data.filter(r=>r.t>=end-daysSetting*86400000)}
  return data;
@@ -615,60 +602,55 @@ function selectedData(){
 const COLORS=['#286348','#c16b32','#356da5'];
 const fmtTick=(t,withHour)=>{const d=new Date(t);return withHour?`${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}h`:`${pad(d.getDate())}/${pad(d.getMonth()+1)}/${String(d.getFullYear()).slice(2)}`};
 const fmtPoint=(t,daily)=>{const d=new Date(t);return daily?`${pad(d.getHours())}:${pad(d.getMinutes())}`:`${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`};
-
-/* Seuil de trou calculé SÉRIE PAR SÉRIE (l'ancien code mélangeait toutes les séries :
-/* Comblement automatique des valeurs manquantes : chaque trou est interpolé
-   linéairement entre les deux relevés valides qui l'entourent, pour que les
-   courbes restent continues même si une trame capteur a été perdue. */
+/* Comble seulement les valeurs manquantes isolées (≤ 2 relevés consécutifs et ≤ 3 h) ; au-delà, le trait est interrompu. */
 function fillMissing(points){
  const out=points.map(p=>({t:p.t,v:Number.isFinite(p.v)?p.v:null}));
  let i=0;
  while(i<out.length){
   if(out[i].v!=null){i++;continue}
   let j=i;while(j<out.length&&out[j].v==null)j++;
-  if(i===0||j>=out.length){i=j;continue} /* bords : pas d'extrapolation */
-  const a=out[i-1],b=out[j],span=(b.t-a.t)||1;
-  for(let k=i;k<j;k++)out[k].v=a.v+(b.v-a.v)*((out[k].t-a.t)/span);
+  if(i>0&&j<out.length){
+   const a=out[i-1],b=out[j];
+   if(j-i<=2&&b.t-a.t<=3*3600000){const span=(b.t-a.t)||1;for(let k=i;k<j;k++)out[k].v=a.v+(b.v-a.v)*((out[k].t-a.t)/span)}
+  }
   i=j;
  }
  return out.filter(p=>p.v!=null);
 }
 function drawChart(id,title,series){
- const el=$(id);
- const anyPoints=series.some(s=>s.points.some(p=>Number.isFinite(p.v)));
- if(!anyPoints){el.innerHTML='<p class="note">Pas de données disponibles pour cette période.</p>';return}
+ const el=$(id),all=series.flatMap(s=>s.points.filter(p=>Number.isFinite(p.v)));
+ if(!all.length){el.innerHTML='<p class="note">Pas de données disponibles pour cette période.</p>';return}
  const W=700,H=215,L=48,R=12,T=18,B=30;
  const daily=!!selectedDate;
  let x0,x1;
  if(daily){x0=dayStart(selectedDate);x1=x0+86400000}
- else{
-  const ts=[];series.forEach(s=>s.points.forEach(p=>{if(Number.isFinite(p.v))ts.push(p.t)}));
-  x0=Math.min(...ts);x1=Math.max(...ts);if(x0===x1)x1=x0+3600000;
- }
- const vals=[];series.forEach(s=>s.points.forEach(p=>{if(Number.isFinite(p.v))vals.push(p.v)}));
- let y0=Math.min(...vals),y1=Math.max(...vals);if(y0===y1){y0-=1;y1+=1}
+ else{x0=Math.min(...all.map(p=>p.t));x1=Math.max(...all.map(p=>p.t));if(x0===x1)x1=x0+3600000}
+ const vals=all.map(p=>p.v);let y0=Math.min(...vals),y1=Math.max(...vals);if(y0===y1){y0-=1;y1+=1}
  const margin=(y1-y0)*.1;y0-=margin;y1+=margin;
  const X=t=>L+(t-x0)/(x1-x0)*(W-L-R),Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);
  let svg='';
  for(let i=0;i<=4;i++){const v=y0+(y1-y0)*i/4,y=Y(v);svg+=`<line class="gridline" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-7}" y="${y+3}" text-anchor="end">${v.toFixed(1)}</text>`}
  if(daily){for(let h=0;h<=24;h+=3){const x=X(x0+h*3600000);svg+=`<line class="gridline" x1="${x}" x2="${x}" y1="${T}" y2="${H-B}"/><text x="${x}" y="${H-10}" text-anchor="${h===0?'start':h===24?'end':'middle'}">${pad(h)}h</text>`}}
  else{const span=x1-x0,withHour=span<=3*86400000;for(let i=0;i<=4;i++){const t=x0+span*i/4,x=X(t);svg+=`<text x="${x}" y="${H-10}" text-anchor="${i===0?'start':i===4?'end':'middle'}">${fmtTick(t,withHour)}</text>`}}
+ /* seuil de trou calculé série par série : le trait est interrompu quand des relevés manquent */
+ const gaps=new Map();
+ for(const s of series){const dts=[];for(let i=1;i<s.points.length&&dts.length<400;i++)dts.push(s.points[i].t-s.points[i-1].t);dts.sort((a,b)=>a-b);gaps.set(s,Math.max(4*3600000,6*(dts.length?dts[Math.floor(dts.length/2)]:0)))}
  for(const s of series){
   const pts=s.points.filter(p=>Number.isFinite(p.v));if(!pts.length)continue;
-  /* sous-échantillonnage : on garde toujours le premier et le dernier point de la série */
-  const step=Math.max(1,Math.ceil(pts.length/600));
-  const sel=pts.filter((p,i)=>i%step===0||i===pts.length-1||i===0);
-  /* ligne continue : plus aucun trou, les points manquants ont été interpolés */
-  let d='';
-  sel.forEach((p,i)=>{d+=(i===0?'M':'L')+X(p.t).toFixed(1)+' '+Y(p.v).toFixed(1)});
-  const dots=sel.length===1?`<circle cx="${X(sel[0].t).toFixed(1)}" cy="${Y(sel[0].v).toFixed(1)}" r="1.8" fill="${s.color}"/>`:'';
+  const gap=gaps.get(s),step=Math.max(1,Math.ceil(pts.length/600));
+  const sel=pts.filter((p,i)=>i%step===0||i===pts.length-1);
+  let d='',prev=null,segLen=0,dots='';
+  sel.forEach(p=>{
+   if(prev===null||p.t-prev.t>gap){if(segLen===1)dots+=`<circle cx="${X(prev.t).toFixed(1)}" cy="${Y(prev.v).toFixed(1)}" r="1.8" fill="${s.color}"/>`;d+=`M${X(p.t).toFixed(1)} ${Y(p.v).toFixed(1)}`;segLen=1}
+   else{d+=`L${X(p.t).toFixed(1)} ${Y(p.v).toFixed(1)}`;segLen++}
+   prev=p;
+  });
+  if(segLen===1&&prev)dots+=`<circle cx="${X(prev.t).toFixed(1)}" cy="${Y(prev.v).toFixed(1)}" r="1.8" fill="${s.color}"/>`;
   svg+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="1.8" stroke-linejoin="round"/>${dots}`;
  }
  const legend=series.map(s=>`<span><i class="dot" style="background:${s.color}"></i>${s.name}</span>`).join('');
  el.innerHTML=`<div class="legend">${legend}</div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}">${svg}<line id="${id}Cur" class="gridline" y1="${T}" y2="${H-B}" x1="0" x2="0" style="display:none"/></svg><div class="tip"></div>`;
- /* Infobulle : pour chaque série, on cherche le point le plus proche de l'abscisse du doigt
-    (l'ancien code prenait UN point de référence toutes séries confondues et affichait des
-    valeurs qui ne correspondaient à aucun relevé réel quand les séries étaient décalées). */
+ /* Infobulle : pour chaque courbe, le relevé le plus proche du doigt */
  const svgEl=el.querySelector('svg'),tip=el.querySelector('.tip'),cursor=el.querySelector('#'+id+'Cur');
  const move=e=>{
   const rect=svgEl.getBoundingClientRect(),w=rect.width||W;
@@ -676,30 +658,20 @@ function drawChart(id,title,series){
   let txt=null,tShown=null;
   for(const s of series){
    let q=null;
-   for(const p of s.points){
-    if(!Number.isFinite(p.v))continue;
-    const dd=Math.abs(p.t-tVal);
-    if(q===null||dd<q.dd)q={dd,t:p.t,v:p.v};
-   }
-   /* on n'affiche la valeur que si elle est raisonnablement proche du curseur */
-   if(q&&q.dd<=Math.max(1800000,(x1-x0)/50)){
-    if(txt===null){txt=fmtPoint(q.t,daily)+' · ';tShown=q.t}
-    txt+=`${s.name} ${q.v.toFixed(1)}  `;
-   }
+   for(const p of s.points){if(!Number.isFinite(p.v))continue;const dd=Math.abs(p.t-tVal);if(q===null||dd<q.dd)q={dd,t:p.t,v:p.v}}
+   if(q&&q.dd<=Math.max(1800000,(x1-x0)/50)){if(txt===null){txt=fmtPoint(q.t,daily)+' · ';tShown=q.t}txt+=`${s.name} ${q.v.toFixed(1)}  `}
   }
   if(txt===null)return;
   tip.textContent=txt.trim();tip.style.display='block';
   const cr=el.getBoundingClientRect();
-  tip.style.left=Math.max(0,Math.min(e.clientX-cr.left+8,cr.width-tip.offsetWidth-2))+'px';
-  tip.style.top='22px';
-  if(tShown!==null){const cx=X(tShown);cursor.setAttribute('x1',cx);cursor.setAttribute('x2',cx);cursor.style.display='block'}
+  tip.style.left=Math.max(0,Math.min(e.clientX-cr.left+8,cr.width-tip.offsetWidth-2))+'px';tip.style.top='22px';
+  const cx=X(tShown);cursor.setAttribute('x1',cx);cursor.setAttribute('x2',cx);cursor.style.display='block';
  };
  svgEl.addEventListener('pointermove',move);svgEl.addEventListener('pointerdown',move);
  svgEl.addEventListener('pointerleave',e=>{if(e.pointerType==='mouse'){tip.style.display='none';cursor.style.display='none'}});
 }
 function seriesFor(data,key,name,color,derive=null){
- /* on conserve les relevés à valeur manquante (dates valides) puis on interpole */
- const points=data.map(r=>({t:r.t,v:derive?derive(r):r[key]})).filter(p=>Number.isFinite(p.t));
+ const points=data.map(r=>({t:r.t,v:derive?derive(r):r[key]}));
  return {name,color,points:fillMissing(points)};
 }
 function renderCharts(data){
@@ -710,8 +682,7 @@ function renderCharts(data){
   seriesFor(data,'he','Air entrant',COLORS[2],r=>absoluteHumidity(r.te,r.he))]);
  drawChart('chartTemp','Températures',[
   seriesFor(data,'st','Salon',COLORS[0]),seriesFor(data,'t1','Sonde résistances',COLORS[1]),seriesFor(data,'te','Air entrant',COLORS[2])]);
- drawChart('chartRPM','Régime ventilateur',[
-  seriesFor(data,'rpm','Régime',COLORS[0])]);
+ drawChart('chartRPM','Régime ventilateur',[seriesFor(data,'rpm','Régime',COLORS[0])]);
 }
 
 /* Comparaison prudente par vitesse (médianes) */
@@ -740,8 +711,8 @@ function analyzeSpeeds(data){
 function renderRecommendation(data){
  const box=$('recommendation');
  const valid=data.filter(r=>Number.isFinite(r.st)&&Number.isFinite(r.sh)&&Number.isFinite(r.te)&&Number.isFinite(r.he));
- if(!valid.length){box.className='advice';box.textContent='Pas assez de données valides. Connecte la VMI et laisse-la enregistrer plusieurs relevés, ou importe un historique.';return}
  box.className='advice';
+ if(!valid.length){box.textContent='Pas assez de données valides. Connecte la VMI et laisse-la enregistrer plusieurs relevés, ou importe un historique.';return}
  const recent=valid.slice(-Math.min(24,valid.length));
  const rh=median(recent.map(r=>r.sh)),ha=median(recent.map(r=>absoluteHumidity(r.st,r.sh))),haIn=median(recent.map(r=>absoluteHumidity(r.te,r.he)));
  const target=Number($('targetRH').value),delta=ha-haIn;
