@@ -205,7 +205,7 @@ const MIN_VALID=new Date(2025,0,1).getTime();   /* avant cette date, l'horloge d
 const HIST_MAX=100000;
 
 let dev=null,chC=null,chT=null,pollTimer=null,snapTimer=null,reconnectTimer=null;
-let manualDisconnect=false,commandQueue=Promise.resolve(),manualCommandPending=false,polling=false,autoDone=false;
+let manualDisconnect=false,disconnectAfterDownload=false,commandQueue=Promise.resolve(),manualCommandPending=false,polling=false,autoDone=false;
 let cur={},lastSeen={},live=[],hist=[],source='hist',selectedDate=null,daysSetting=30;
 let logLines=[],dlFrames=0;
 let download={on:false,rows:[],buf:'',total:0,sigs:new Set(),got:false,lastPacket:0,timeout:null};
@@ -408,6 +408,7 @@ function startPolling(){
 function cleanupConnection(){clearInterval(pollTimer);clearInterval(snapTimer);chC=null;chT=null}
 function onDisconnect(){
  cleanupConnection();setStatus('Déconnecté.');
+ if(disconnectAfterDownload){disconnectAfterDownload=false;return}
  if(!manualDisconnect&&dev){setStatus('Connexion perdue, tentative de reconnexion…');clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnect,4000)}
 }
 async function connectCharacteristics(server){
@@ -446,6 +447,7 @@ document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',asyn
  manualCommandPending=true;
  const controls=[...document.querySelectorAll('[data-r]')];
  controls.forEach(x=>x.disabled=true);
+ document.querySelectorAll('[data-r]').forEach(x=>x.setAttribute('aria-disabled','true'));
  showError('');
  const reg=Number(b.dataset.r),value=Number(b.dataset.v),[key,expected,label]=EXPECT[reg](value);
  const result=$('cmdResult');
@@ -464,7 +466,7 @@ document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',asyn
  }catch(e){
   showError(e);result.textContent='Erreur pendant la commande.';
  }finally{
-  manualCommandPending=false;controls.forEach(x=>x.disabled=false);
+  manualCommandPending=false;controls.forEach(x=>{x.disabled=false;x.setAttribute('aria-disabled','false')});
  }
 }));
 const setCommandsDisabled=dis=>document.querySelectorAll('[data-r]').forEach(x=>x.disabled=dis);
@@ -540,7 +542,18 @@ function finishDownload(reachedCut,timeout=false){
  if(count)ingest(download.rows,'Téléchargement');
  $('dlh').disabled=false;setCommandsDisabled(false);
  $('dlp').textContent=`Terminé : ${count} nouvelles lignes${reachedCut?' · historique à jour':timeout?(download.got?' · arrêt après une pause de 20 s':' · aucune réponse de la VMI'):(download.sigs.size?' · attention : trou possible avant la dernière ligne mémorisée':' · historique complet')}`;
- if(reachedCut&&dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();
+ /* La VMI ne sait pas arrêter seule le flux. Cette déconnexion est volontaire. */
+ if(reachedCut&&dev&&dev.gatt&&dev.gatt.connected){
+  disconnectAfterDownload=true;
+  dev.gatt.disconnect();
+ }
+}
+function abortDownload(message){
+ if(!download.on)return;
+ download.on=false;clearTimeout(download.timeout);
+ $('dlh').disabled=false;setCommandsDisabled(false);
+ $('dlp').textContent=message;
+ log(message);
 }
 async function startDownload(auto=false){
  if(!chC){if(!auto)showError('Connecte-toi d’abord à la VMI.');return}
@@ -549,9 +562,18 @@ async function startDownload(auto=false){
  download={on:true,rows:[],buf:'',total:0,sigs:new Set(hist.filter(r=>r.rk&&Number.isFinite(r.d)).map(sigOf)),got:false,lastPacket:Date.now(),timeout:null};
  $('dlh').disabled=true;setCommandsDisabled(true);
  $('dlp').textContent=auto?'Téléchargement automatique de l’historique…':'Démarrage du téléchargement…';
- const ok=await setClock();
- if(!ok){download.on=false;$('dlh').disabled=false;setCommandsDisabled(false);return}
- await send(0x2c,0);await send(0x20,0);await send(0x22,0);armDownloadTimeout();
+ try{
+  const ok=await setClock();
+  if(!ok){abortDownload('Téléchargement annulé : impossible de synchroniser l’heure.');return}
+  const commands=[[0x2c,0],[0x20,0],[0x22,0]];
+  for(const [reg,value] of commands){
+   const sent=await send(reg,value);
+   if(!sent){abortDownload('Téléchargement interrompu : une commande Bluetooth a échoué.');return}
+  }
+  armDownloadTimeout();
+ }catch(e){
+  abortDownload('Téléchargement interrompu : '+(e.message||e));
+ }
 }
 $('dlh').onclick=()=>startDownload(false);
 function autoHistory(){
@@ -698,9 +720,10 @@ function analyzeSpeeds(data){
  for(const g of groups)html+=`<tr><td>${g.v}</td><td>${g.n}</td><td>${g.rh==null?'–':fmt(g.rh)+' %'}</td><td>${g.ha==null?'–':fmt(g.ha)+' g/m³'}</td><td>${g.delta==null?'–':fmt(g.delta)+' g/m³'}</td></tr>`;
  html+='</tbody></table>';
  const sufficient=groups.filter(g=>g.n>=min);
+ const comparable=sufficient.length>=2;
  let advice='';
  if(!rows.length)advice='Aucun relevé de la période ne contient la vitesse : seuls les relevés de l\'enregistrement en direct l\'enregistrent. Choisis la source « En direct » une fois que quelques relevés ont été pris.';
- else if(!sufficient.length)advice=`Il faut au moins ${min} relevés avec la vitesse identifiée pour chaque comparaison. Continue l'enregistrement en direct.`;
+ else if(!comparable)advice=`Il faut au moins ${min} relevés pour au moins deux vitesses différentes afin de comparer les résultats. Continue l'enregistrement en direct.`;
  else{
   const best=sufficient.filter(g=>g.rh!=null&&g.rh<=target).sort((a,b)=>a.v-b.v)[0];
   if(best)advice=`Parmi les vitesses disposant d'au moins ${min} relevés, la vitesse ${best.v} est la plus basse dont l'humidité relative médiane observée est inférieure ou égale à ${target} %. C'est une piste à vérifier sur des périodes comparables, pas une preuve d'optimum.`;
