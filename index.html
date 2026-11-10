@@ -522,7 +522,7 @@ function fixClock(recs){
 function plural(n,one,many=one+'s'){return n===1?one:many}
 function formatDateTime(t){return new Date(t).toLocaleString('fr-FR',{dateStyle:'short',timeStyle:'short'})}
 function datasetStats(rows){
- const valid=rows.filter(r=>r&&Number.isFinite(r.t)&&r.t>=MIN_VALID).sort((a,b)=>a.t-b.t);
+ const now=Date.now(),valid=rows.filter(r=>r&&Number.isFinite(r.t)&&r.t>=MIN_VALID&&r.t<=now+2*DAY).sort((a,b)=>a.t-b.t);
  if(!valid.length)return {count:0,first:null,last:null,days:0,gaps:0};
  let gaps=0;
  for(let i=1;i<valid.length;i++)if(valid[i].t-valid[i-1].t>6*3600000)gaps++;
@@ -539,6 +539,7 @@ function renderHistoryDiagnostics(data){
  if(st.gaps)msg+=` ${st.gaps} interruption${st.gaps>1?'s':''} de plus de 6 h détectée${st.gaps>1?'s':''}.`;
  if(source==='hist'&&age>30)msg+=' Attention : le dernier relevé date de plus de 30 jours.';
  if(st.count<=300)msg+=' Ce nombre peut correspondre à la mémoire historique limitée de la VMI ou à un export partiel ; il ne permet pas de prouver que la VMI conserve les données depuis octobre 2025.';
+ if(daysSetting&&st.days<daysSetting)msg+=` La période demandée est de ${daysSetting} jours, mais seules ${st.days.toFixed(1)} journées sont réellement disponibles.`;
  el.className='advice diagnostic';el.textContent=msg;
 }
 function ingest(recs,label){
@@ -598,9 +599,14 @@ function downloadText(content,name,type){const blob=new Blob(['\ufeff',content],
 
 /* ---------- Graphiques SVG ---------- */
 function selectedData(){
- const data=(source==='live'?live:hist).filter(r=>r.t>=MIN_VALID).sort((a,b)=>a.t-b.t);
- if(selectedDate){const start=dayStart(selectedDate),end=start+86400000;return data.filter(r=>r.t>=start&&r.t<end)}
- if(daysSetting&&data.length){const end=data[data.length-1].t;return data.filter(r=>r.t>=end-daysSetting*86400000)}
+ const now=Date.now(),maxFuture=now+2*DAY;
+ /* On écarte les dates impossibles : horloge VMI mal réglée ou ligne Excel corrompue. */
+ const data=(source==='live'?live:hist).filter(r=>r&&Number.isFinite(r.t)&&r.t>=MIN_VALID&&r.t<=maxFuture).sort((a,b)=>a.t-b.t);
+ if(selectedDate){const start=dayStart(selectedDate),end=start+DAY;return data.filter(r=>r.t>=start&&r.t<end)}
+ if(daysSetting&&data.length){
+  const end=data[data.length-1].t;
+  return data.filter(r=>r.t>=end-daysSetting*DAY&&r.t<=end);
+ }
  return data;
 }
 const COLORS=['#286348','#c16b32','#356da5'];
@@ -615,7 +621,16 @@ function fillMissing(points){
 function gapThreshold(points){const dts=[];for(let i=1;i<points.length&&dts.length<400;i++){const dt=points[i].t-points[i-1].t;if(dt>0)dts.push(dt)}dts.sort((a,b)=>a-b);return Math.max(4*3600000,6*(dts.length?dts[Math.floor(dts.length/2)]:0))}
 function drawChart(id,title,series){
  const el=$(id),all=series.flatMap(s=>s.points.filter(p=>Number.isFinite(p.v)));if(!all.length){el.innerHTML='<p class="note">Pas de données disponibles pour cette période.</p>';return}
- const W=700,H=215,L=48,R=12,T=18,B=30,daily=!!selectedDate;let x0,x1;if(daily){x0=dayStart(selectedDate);x1=x0+86400000}else{x0=Math.min(...all.map(p=>p.t));x1=Math.max(...all.map(p=>p.t));if(x0===x1)x1=x0+3600000}
+ const W=700,H=215,L=48,R=12,T=18,B=30,daily=!!selectedDate;let x0,x1;
+ if(daily){x0=dayStart(selectedDate);x1=x0+DAY}
+ else if(daysSetting){
+  /* La fenêtre est fixe : elle ne rétrécit pas à la seule période effectivement remplie. */
+  x1=Math.max(...all.map(p=>p.t));
+  x0=x1-daysSetting*DAY;
+ }else{
+  x0=Math.min(...all.map(p=>p.t));x1=Math.max(...all.map(p=>p.t));
+ }
+ if(x0===x1)x1=x0+3600000;
  const vals=all.map(p=>p.v);let y0=Math.min(...vals),y1=Math.max(...vals);if(y0===y1){y0-=1;y1+=1}const margin=(y1-y0)*.1;y0-=margin;y1+=margin;const X=t=>L+(t-x0)/(x1-x0)*(W-L-R),Y=v=>T+(1-(v-y0)/(y1-y0))*(H-T-B);let svg='';
  for(let i=0;i<=4;i++){const v=y0+(y1-y0)*i/4,y=Y(v);svg+=`<line class="gridline" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-7}" y="${y+3}" text-anchor="end">${v.toFixed(1)}</text>`}
  if(daily){for(let h=0;h<=24;h+=3){const x=X(x0+h*3600000);svg+=`<line class="gridline" x1="${x}" x2="${x}" y1="${T}" y2="${H-B}"/><text x="${x}" y="${H-10}" text-anchor="${h===0?'start':h===24?'end':'middle'}">${pad(h)}h</text>`}}else{const span=x1-x0,withHour=span<=3*86400000;for(let i=0;i<=4;i++){const t=x0+span*i/4,x=X(t);svg+=`<text x="${x}" y="${H-10}" text-anchor="${i===0?'start':i===4?'end':'middle'}">${fmtTick(t,withHour)}</text>`}}
