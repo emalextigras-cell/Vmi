@@ -65,8 +65,10 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <h1>VMI Purevent</h1>
   <p class="sub">Supervision, historique et aide à l'optimisation</p>
  </div>
- <button class="outline" id="themeBtn" title="Changer le thème">Thème</button>
+ <div class="row"><span class="pill" id="ver">v13</span><button class="outline" id="themeBtn" title="Changer le thème">Thème</button></div>
 </header>
+
+<div id="errBanner" class="advice warn" style="display:none"></div>
 
 <section class="card">
  <div class="row">
@@ -188,11 +190,18 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <pre id="log"></pre>
  </details>
 </section>
-<footer>VMI Purevent · version 12 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
+<section class="card">
+ <h2>Diagnostic</h2>
+ <p class="sub">En cas de problème : touche « Diagnostic », puis « Copier » et colle le texte dans la conversation. Il contient l’état de l’appli, de ton historique et les erreurs, sans donnée personnelle.</p>
+ <div class="row"><button class="outline" id="diagBtn">Diagnostic</button><button class="outline" id="diagCopy">Copier</button></div>
+ <pre id="diagOut"></pre>
+</section>
+<footer>VMI Purevent · version 13 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
 </main>
 
 <script>
 'use strict';
+const APP_VERSION='13';
 if('serviceWorker' in navigator){navigator.serviceWorker.register('sw.js').catch(()=>{})}
 
 /* Protocole Bluetooth : UUID, registres et positions d'octets déduits d'une capture réelle de VMI+. */
@@ -201,6 +210,13 @@ const CH_C='0003cbb1-0000-1000-8000-00805f9b0131';
 const SVC_T='0003cab5-0000-1000-8000-00805f9b0131';
 const CH_T='0003caa2-0000-1000-8000-00805f9b0131';
 const $=id=>document.getElementById(id);
+const errors=[];
+function recordError(m){
+ errors.push(new Date().toLocaleTimeString('fr-FR')+' '+m);if(errors.length>30)errors.shift();
+ const b=$('errBanner');b.textContent='⚠ Une erreur interne est survenue ('+errors.length+'). Touche « Diagnostic » (en bas de page) pour la copier.';b.style.display='block';
+}
+window.addEventListener('error',e=>recordError('Erreur : '+(e.message||(e.error&&e.error.message)||'inconnue')+(e.filename?' ('+String(e.filename).split('/').pop()+':'+e.lineno+')':'')));
+window.addEventListener('unhandledrejection',e=>recordError('Promesse rejetée : '+((e.reason&&e.reason.message)||e.reason)));
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const pad=n=>String(n).padStart(2,'0');
 const DAY=864e5;
@@ -329,7 +345,7 @@ const send=(reg,val)=>writeFrame(frame(reg,val));
 async function setClock(){if(!chC){showError('Connecte-toi d’abord à la VMI.');return false}const d=new Date();const ok=await writeFrame(timeFrame(d));$('dlp').textContent=ok?'Heure envoyée : '+d.toLocaleString('fr-FR'):'Heure non envoyée.';return ok}
 
 function onNotification(ev){
- try{handleNotification(ev)}catch(e){log('Erreur de décodage d’une trame : '+(e.message||e))}
+ try{handleNotification(ev)}catch(e){log('Erreur de décodage d’une trame : '+(e.message||e));recordError('Décodage d’une trame : '+(e.message||e))}
 }
 function handleNotification(ev){
  const v=ev.target.value;
@@ -681,12 +697,48 @@ function renderFreshness(){
  const left=cap-age;
  let cls='advice good';
  let msg=`Historique à jour jusqu’au ${fmtShort(newest)} (il y a ${age<1?Math.max(0,Math.round(age*24))+' h':age.toFixed(1)+' j'}). La VMI garde environ ${Math.round(cap)} jours de relevés : télécharge avant le ${fmtShort(newest+cap*DAY)}.`;
- if(left<=0){cls='advice warn';msg+=' ⚠ Des relevés ont peut-être déjà été écrasés : connecte-toi maintenant.'}
+ if(left<=1){cls='advice warn';msg+=' ⚠ Des relevés ont peut-être déjà été écrasés : connecte-toi maintenant.'}
  else if(age>=14||left<7){cls='advice warn';msg+=' Pense à te connecter bientôt.'}
  if(meta.lastSync)msg+=` Dernière synchronisation : ${fmtShort(meta.lastSync)}.`;
  box.className=cls;box.textContent=msg;
 }
 setInterval(renderFreshness,60000);
+
+/* ---------- Diagnostic ---------- */
+function buildDiagnostic(){
+ const L=[];
+ const ago=t=>t?Math.round((Date.now()-t)/1000)+' s':'jamais';
+ L.push(`VMI Purevent – diagnostic – version ${APP_VERSION} – ${new Date().toLocaleString('fr-FR')}`);
+ L.push('Navigateur : '+navigator.userAgent);
+ L.push(`Bluetooth : ${navigator.bluetooth?'disponible':'indisponible'} · connecté : ${connected()?'oui':'non'} · service worker : ${'serviceWorker' in navigator?(navigator.serviceWorker.controller?'actif':'non actif'):'absent'} · SheetJS : ${window.XLSX?'chargé':'non chargé'}`);
+ const valid=hist.filter(r=>r.t>=MIN_VALID);
+ L.push(`Historique : ${hist.length} relevés dont ${valid.length} valides`);
+ if(valid.length){
+  const ts=valid.map(r=>r.t);
+  L.push(`  période : ${fmtLocal(ts[0])} → ${fmtLocal(ts[ts.length-1])}`);
+  const gaps=[];for(let i=1;i<ts.length;i++)if(ts[i]-ts[i-1]>2*3600e3)gaps.push(`${fmtShort(ts[i-1])} → ${fmtShort(ts[i])} (${((ts[i]-ts[i-1])/3600e3).toFixed(1)} h)`);
+  L.push(`  trous > 2 h : ${gaps.length}${gaps.length?' : '+gaps.slice(0,8).join(' ; '):''}`);
+  const miss=k=>valid.filter(r=>r[k]==null).length;
+  L.push(`  valeurs manquantes : salon T ${miss('st')}, salon HR ${miss('sh')}, sonde 1 T ${miss('t1')}, air entrant T ${miss('te')}, air entrant HR ${miss('he')}, régime ${miss('rpm')}`);
+  L.push(`  relevés avec compteur de jours : ${valid.filter(r=>Number.isFinite(r.d)).length} · avec date brute : ${valid.filter(r=>r.rk).length}`);
+ }
+ L.push(`Direct : ${live.length} relevés${live.length?` (du ${fmtShort(live[0].t)} au ${fmtShort(live[live.length-1].t)})`:''}`);
+ L.push(`Synchro : dernière ${meta.lastSync?fmtLocal(meta.lastSync):'jamais'} · mesures reçues : salon ${ago(lastSeen.salon)}, sondes ${ago(lastSeen.probes)}, état ${ago(lastSeen.state)}`);
+ L.push(`Affichage : source ${source}, jour ${selectedDate||'aucun'}, période ${daysSetting?daysSetting+' j':'tout'}`);
+ L.push('Graphiques : '+['chartRH','chartHA','chartTemp','chartRPM'].map(id=>`${id} ${(($(id).innerHTML.match(/<path/g))||[]).length} courbe(s)`).join(' · '));
+ L.push('Téléchargement : '+(download.on?'en cours':'inactif')+` · ${$('dlp').textContent||'—'}`);
+ L.push('Commandes : '+($('cmdResult').textContent||'—'));
+ L.push('Erreurs : '+(errors.length?'\n  '+errors.join('\n  '):'aucune'));
+ L.push('Journal (25 dernières lignes) :');
+ logLines.slice(-25).forEach(x=>L.push('  '+x));
+ return L.join('\n');
+}
+$('diagBtn').onclick=()=>{$('diagOut').textContent=buildDiagnostic()};
+$('diagCopy').onclick=async()=>{
+ const txt=buildDiagnostic();$('diagOut').textContent=txt;
+ try{await navigator.clipboard.writeText(txt);showError('Diagnostic copié : colle-le dans la conversation.')}
+ catch(e){showError('Copie impossible : sélectionne le texte du diagnostic puis copie-le à la main.')}
+};
 
 /* ---------- Graphiques SVG ---------- */
 function selectedData(){
