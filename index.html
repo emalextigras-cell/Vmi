@@ -145,11 +145,6 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
 </section>
 
 <section class="card">
- <h2>Planning dynamique (Calculé par l'application)</h2>
- <div id="dynamicPlanning" class="advice">Analyse des données en cours pour déterminer les vitesses et le préchauffage...</div>
-</section>
-
-<section class="card">
  <h2>Historique & graphiques</h2>
  <div class="row">
   <label for="fx">Importer un export VMI+ (.xlsx/.xls, nécessite internet la première fois) :</label><input type="file" id="fx" accept=".xlsx,.xls">
@@ -193,7 +188,7 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <pre id="log"></pre>
  </details>
 </section>
-<footer>VMI Purevent · version 13 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
+<footer>VMI Purevent · version 12 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
 </main>
 
 <script>
@@ -273,6 +268,8 @@ async function init(){
   if(!live.length){try{const x=JSON.parse(localStorage.getItem('vmi_live')||'[]');if(Array.isArray(x))live=x}catch(e){}}
   await dbSet('migrated',true);
  }
+ /* Les relevés datés d'avant 2025 ont une date fausse (horloge de la VMI) et ne peuvent pas être corrigés
+    sans leur compteur de jours : on les retire, un nouvel import ou téléchargement les rétablit avec la bonne date. */
  const bad=hist.filter(r=>!(r&&r.t>=MIN_VALID)).length;
  if(bad){hist=hist.filter(r=>r&&r.t>=MIN_VALID);$('importInfo').textContent=`${bad} anciens relevés à date invalide ont été retirés. Réimporte ton export VMI+ ou récupère l’historique : ils reviendront avec la bonne date.`}
  hist.sort((a,b)=>a.t-b.t);
@@ -390,6 +387,7 @@ function updateLiveMetrics(){
  else{box.className='advice';box.textContent='Les humidités absolues sont proches. L’effet asséchant potentiel de l’air entrant est limité à cet instant.'}
 }
 
+/* Relevés en direct : dès que le salon est frais, avec les sondes si elles le sont aussi */
 function takeSnapshot(){
  const now=Date.now();
  if(!lastSeen.salon||now-lastSeen.salon>90000)return;
@@ -404,6 +402,7 @@ function takeSnapshot(){
  if(source==='live')render();
 }
 
+/* Scrutation : pas de chevauchement, arrêt dès que la connexion tombe */
 async function poll(force=false){
  if(polling||!connected()||download.on||(manualCommandPending&&!force))return;
  polling=true;
@@ -450,6 +449,7 @@ async function reconnect(){
 $('conn').onclick=connectBLE;
 $('disc').onclick=()=>{manualDisconnect=true;clearTimeout(reconnectTimer);cleanupConnection();if(dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();setStatus('Déconnexion demandée.')};
 
+/* Boutons de commande : une commande à la fois, avec vérification de l'état renvoyé par la VMI */
 const EXPECT={24:v=>['vit',v+1,'Vitesse '+(v+1)],25:v=>['boost',v,'Boost '+(v?'activé':'arrêté')],26:v=>['hol',v,'Mode vacances '+(v?'activé':'arrêté')]};
 document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',async()=>{
  if(manualCommandPending||download.on)return;
@@ -481,6 +481,10 @@ document.querySelectorAll('[data-r]').forEach(b=>b.addEventListener('click',asyn
 const setCommandsDisabled=dis=>document.querySelectorAll('[data-r]').forEach(x=>x.disabled=dis);
 $('clk').onclick=setClock;
 
+/* ---------- Dates ----------
+   - l'export tableur inverse jour et mois dans les cellules de type date (jour ≤ 12) ;
+   - surtout, la VMI date parfois ses relevés avec une horloge fausse (par ex. avril 2018) pendant des périodes
+     entières. Son compteur « jours de fonctionnement » reste juste : on s'en sert pour retrouver la vraie date. */
 function parseCell(v){
  if(typeof v==='number'&&v>30000&&window.XLSX){
   const c=XLSX.SSF.parse_date_code(v);if(!c)return null;
@@ -500,7 +504,7 @@ function recFrom(r){
 }
 const dayNo=t=>{const d=new Date(t);return Math.floor(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate())/DAY)};
 const modeOf=a=>{const m=new Map();let best,bc=0;for(const x of a){const c=(m.get(x)||0)+1;m.set(x,c);if(c>bc){bc=c;best=x}}return best};
-
+/* Corrige en place les relevés datés d'avant 2025. Retourne {fixed, kept}. */
 function fixClock(recs){
  const known=hist.concat(recs).filter(r=>r.t>=MIN_VALID&&Number.isFinite(r.d)&&new Date(r.t).getHours()>=10);
  const E0=modeOf(known.map(r=>dayNo(r.t)-r.d));
@@ -530,6 +534,8 @@ function ingest(recs,label){
  render();
 }
 
+/* Téléchargement de l'historique : on s'arrête au premier relevé déjà connu, puis on coupe la connexion
+   pour interrompre le flux de la VMI (elle ne sait pas s'arrêter seule). */
 const sigOf=r=>r.rk+'|'+r.d;
 function parseDownloadLine(line){
  if(!download.on||!/^\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2};/.test(line))return;
@@ -562,10 +568,11 @@ async function startDownload(auto=false){
 $('dlh').onclick=()=>startDownload(false);
 function autoHistory(){
  if(autoDone||download.on||!connected())return;
- autoDone=true;
+ autoDone=true; /* une seule fois par connexion : pas de boucle déconnexion/reconnexion */
  startDownload(true).catch(e=>log('Téléchargement automatique impossible : '+(e.message||e)));
 }
 
+/* Import tableur */
 const XLSX_URLS=['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js','https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
 function loadScript(url,ms=15000){
  return new Promise((res,rej)=>{
@@ -616,6 +623,7 @@ function downloadText(content,name,type,bom=true){
  a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
+/* ---------- Export, sauvegarde et fraîcheur de l'historique ---------- */
 const fmtLocal=t=>{const d=new Date(t);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`};
 const fmtShort=t=>{const d=new Date(t);return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`};
 const decFr=v=>(v==null||!Number.isFinite(v))?'':String(Math.round(v*100)/100).replace('.',',');
@@ -660,6 +668,8 @@ $('restoreFile').onchange=async e=>{
  }catch(err){$('backupInfo').textContent='Restauration impossible : '+err.message}
  e.target.value='';
 };
+/* La VMI ne garde que ~800 relevés : on estime sa capacité en jours d'après le rythme réel des relevés
+   et on prévient avant que des relevés non téléchargés soient écrasés. */
 function renderFreshness(){
  const box=$('fresh');
  const rows=hist.filter(r=>r.t>=MIN_VALID);
@@ -678,6 +688,7 @@ function renderFreshness(){
 }
 setInterval(renderFreshness,60000);
 
+/* ---------- Graphiques SVG ---------- */
 function selectedData(){
  const data=(source==='live'?live:hist).filter(r=>r.t>=MIN_VALID).sort((a,b)=>a.t-b.t);
  if(selectedDate){const start=dayStart(selectedDate),end=start+86400000;return data.filter(r=>r.t>=start&&r.t<end)}
@@ -687,7 +698,7 @@ function selectedData(){
 const COLORS=['#286348','#c16b32','#356da5'];
 const fmtTick=(t,withHour)=>{const d=new Date(t);return withHour?`${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}h`:`${pad(d.getDate())}/${pad(d.getMonth()+1)}/${String(d.getFullYear()).slice(2)}`};
 const fmtPoint=(t,daily)=>{const d=new Date(t);return daily?`${pad(d.getHours())}:${pad(d.getMinutes())}`:`${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`};
-
+/* Comble seulement les valeurs manquantes isolées (≤ 2 relevés consécutifs et ≤ 3 h) ; au-delà, le trait est interrompu. */
 function fillMissing(points){
  const out=points.map(p=>({t:p.t,v:Number.isFinite(p.v)?p.v:null}));
  let i=0;
@@ -717,6 +728,7 @@ function drawChart(id,title,series){
  for(let i=0;i<=4;i++){const v=y0+(y1-y0)*i/4,y=Y(v);svg+=`<line class="gridline" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text x="${L-7}" y="${y+3}" text-anchor="end">${v.toFixed(1)}</text>`}
  if(daily){for(let h=0;h<=24;h+=3){const x=X(x0+h*3600000);svg+=`<line class="gridline" x1="${x}" x2="${x}" y1="${T}" y2="${H-B}"/><text x="${x}" y="${H-10}" text-anchor="${h===0?'start':h===24?'end':'middle'}">${pad(h)}h</text>`}}
  else{const span=x1-x0,withHour=span<=3*86400000;for(let i=0;i<=4;i++){const t=x0+span*i/4,x=X(t);svg+=`<text x="${x}" y="${H-10}" text-anchor="${i===0?'start':i===4?'end':'middle'}">${fmtTick(t,withHour)}</text>`}}
+ /* seuil de trou calculé série par série : le trait est interrompu quand des relevés manquent */
  const gaps=new Map();
  for(const s of series){const dts=[];for(let i=1;i<s.points.length&&dts.length<400;i++)dts.push(s.points[i].t-s.points[i-1].t);dts.sort((a,b)=>a-b);gaps.set(s,Math.max(4*3600000,6*(dts.length?dts[Math.floor(dts.length/2)]:0)))}
  for(const s of series){
@@ -734,6 +746,7 @@ function drawChart(id,title,series){
  }
  const legend=series.map(s=>`<span><i class="dot" style="background:${s.color}"></i>${s.name}</span>`).join('');
  el.innerHTML=`<div class="legend">${legend}</div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}">${svg}<line id="${id}Cur" class="gridline" y1="${T}" y2="${H-B}" x1="0" x2="0" style="display:none"/></svg><div class="tip"></div>`;
+ /* Infobulle : pour chaque courbe, le relevé le plus proche du doigt */
  const svgEl=el.querySelector('svg'),tip=el.querySelector('.tip'),cursor=el.querySelector('#'+id+'Cur');
  const move=e=>{
   const rect=svgEl.getBoundingClientRect(),w=rect.width||W;
@@ -768,6 +781,7 @@ function renderCharts(data){
  drawChart('chartRPM','Régime ventilateur',[seriesFor(data,'rpm','Régime',COLORS[0])]);
 }
 
+/* Comparaison prudente par vitesse (médianes) */
 function median(a){const x=a.filter(Number.isFinite).sort((p,q)=>p-q);if(!x.length)return null;const m=Math.floor(x.length/2);return x.length%2?x[m]:(x[m-1]+x[m])/2}
 function analyzeSpeeds(data){
  const min=Number($('minSamples').value),target=Number($('targetRH').value);
@@ -790,7 +804,6 @@ function analyzeSpeeds(data){
  }
  $('speedAnalysis').innerHTML=html+`<div class="advice">${advice}</div>`;
 }
-
 function renderRecommendation(data){
  const box=$('recommendation');
  const valid=data.filter(r=>Number.isFinite(r.st)&&Number.isFinite(r.sh)&&Number.isFinite(r.te)&&Number.isFinite(r.he));
@@ -810,77 +823,13 @@ function renderRecommendation(data){
  }
  box.textContent=msg;
 }
-
-/* NOUVELLE FONCTION DE PLANIFICATION DYNAMIQUE */
-function analyzeDynamicPlanning(data){
- const box = $('dynamicPlanning');
- if(!box) return;
- 
- const valid = data.filter(r => Number.isFinite(r.st) && Number.isFinite(r.sh) && Number.isFinite(r.te) && Number.isFinite(r.he));
- if(valid.length < 6){
-  box.textContent = 'Pas assez de données valides pour calculer un planning automatique (laisse tourner le direct ou importe un historique).';
-  return;
- }
-
- const latestT = valid[valid.length - 1].t;
- const recent = valid.filter(r => r.t >= latestT - 86400000); // 24 dernières heures
- 
- let slots = [];
- let current = null;
-
- recent.forEach(r => {
-  const haIn = absoluteHumidity(r.st, r.sh);
-  const haOut = absoluteHumidity(r.te, r.he);
-  if(haIn == null || haOut == null) return;
-  
-  const delta = haIn - haOut; // Positif = air entrant plus sec
-  const tempOut = r.te;
-  const needPreheat = tempOut < 12;
-
-  let speed = 1;
-  if(delta > 2.5) speed = 3;       // Fort potentiel d'assèchement -> Vitesse 3
-  else if(delta > 1.0) speed = 2;  // Potentiel modéré -> Vitesse 2
-  else speed = 1;                  // Air neutre ou humide -> Vitesse 1
-
-  const key = `${speed}-${needPreheat}`;
-  
-  if(!current || current.key !== key || (r.t - current.end > 7200000)){
-   if(current && current.count >= 2) slots.push(current);
-   current = { start: r.t, end: r.t, speed, needPreheat, key, count: 1 };
-  } else {
-   current.end = r.t;
-   current.count++;
-  }
- });
- if(current && current.count >= 2) slots.push(current);
-
- if(!slots.length){
-  box.innerHTML = '<div class="advice">Aucune plage exploitable dégagée sur la période récente. Maintien en Vitesse 1 conseillé.</div>';
-  return;
- }
-
- let html = '<b>Plages horaires conseillées d’après tes données réelles (24h glissantes) :</b><ul>';
- slots.forEach(s => {
-  const d1 = new Date(s.start), d2 = new Date(s.end);
-  const preheatTxt = s.needPreheat ? '🔥 <b>Préchauffage actif requis</b> (<12°C)' : '🌡️ Sans préchauffage (≥12°C)';
-  html += `<li>De <b>${pad(d1.getHours())}h${pad(d1.getMinutes())}</b> à <b>${pad(d2.getHours())}h${pad(d2.getMinutes())}</b> : 
-   <b>Vitesse ${s.speed}</b> · <i>${preheatTxt}</i></li>`;
- });
- html += '</ul><p class="note">Calculé automatiquement en comparant l’humidité absolue intérieure/extérieure ($HA_{salon} - HA_{entrant}$) et la température de l’air entrant.</p>';
- box.innerHTML = html;
-}
-
 function render(){
  const data=selectedData();
  $('liveCount').textContent=live.length;
  $('historyStatus').textContent=`${data.length} relevés affichés · ${source==='live'?'enregistrement local en direct':'historique importé / VMI'} · ${selectedDate?'jour '+selectedDate:(daysSetting?daysSetting+' derniers jours':'toute la période')}`;
  const lastRpm=[...hist].reverse().find(r=>Number.isFinite(r.rpm));
  $('rpm').textContent=lastRpm?lastRpm.rpm:'–';
- renderCharts(data);
- renderRecommendation(data);
- analyzeSpeeds(data);
- renderFreshness();
- analyzeDynamicPlanning(data); // Exécution de l'analyse dynamique à chaque affichage
+ renderCharts(data);renderRecommendation(data);analyzeSpeeds(data);renderFreshness();
 }
 $('targetRH').onchange=render;$('minSamples').onchange=render;
 
