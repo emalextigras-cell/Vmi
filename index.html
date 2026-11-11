@@ -189,6 +189,90 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
  </details>
 </section>
 <footer>VMI Purevent · version 12 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
+
+<style>
+/* Modules d'analyse VMI Plus — ajout indépendant, sans toucher au protocole Bluetooth */
+.vmi-table-wrap{overflow:auto;max-width:100%;border:1px solid var(--line);border-radius:8px}
+.vmi-table-wrap table{min-width:620px}
+.vmi-table-wrap td,.vmi-table-wrap th{white-space:nowrap}
+.vmi-muted{color:var(--mut);font-size:.8rem}
+.vmi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px}
+.vmi-grid label{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--mut)}
+.vmi-grid select,.vmi-grid input{width:100%;min-width:0}
+.vmi-kpi{padding:9px;border:1px solid var(--line);border-radius:8px}
+.vmi-kpi b{display:block;font-size:1.25rem}
+.vmi-kpi span{font-size:.75rem;color:var(--mut)}
+.vmi-warn{border-left:4px solid var(--warn);padding:9px;background:var(--bg);margin:8px 0}
+.vmi-good{border-left:4px solid var(--good);padding:9px;background:var(--bg);margin:8px 0}
+.vmi-scroll{max-height:340px;overflow:auto}
+</style>
+
+<section class="card" id="vmiPlusImportCard">
+ <h2>Import complet VMI Plus — CSV original</h2>
+ <p class="sub">Importe le CSV directement exporté par VMI Plus. Les 3 lignes de métadonnées, les 124 colonnes et les valeurs brutes sont conservées séparément de l'historique Bluetooth.</p>
+ <div class="row">
+  <label for="vmiCsvFile">Fichier CSV original :</label>
+  <input id="vmiCsvFile" type="file" accept=".csv,text/csv">
+  <button class="outline" id="vmiCsvClear">Effacer l'import CSV</button>
+ </div>
+ <div id="vmiCsvStatus" class="status">Aucun CSV VMI Plus importé.</div>
+ <div id="vmiCsvMeta" class="note"></div>
+ <div class="vmi-grid" id="vmiCsvStats"></div>
+</section>
+
+<section class="card" id="vmiSensorCard">
+ <h2>Identification des sondes — configuration manuelle</h2>
+ <p class="sub">Aucune colonne de sonde n'est présumée intérieure ou extérieure. Associe les champs uniquement lorsque leur emplacement physique est vérifié. Les valeurs absentes, OFF et inconnues restent distinctes.</p>
+ <div class="vmi-grid">
+  <label>Température intérieure<select id="vmiMapTin"><option value="">Non définie</option></select></label>
+  <label>Humidité relative intérieure<select id="vmiMapRHin"><option value="">Non définie</option></select></label>
+  <label>Température extérieure<select id="vmiMapTout"><option value="">Non définie</option></select></label>
+  <label>Humidité relative extérieure<select id="vmiMapRHout"><option value="">Non définie</option></select></label>
+  <label>Code vitesse constructeur<select id="vmiMapSpeed"><option value="">Non défini</option></select></label>
+  <label>Heure / date<select id="vmiMapDate"><option value="">Non définie</option></select></label>
+ </div>
+ <div class="row"><button id="vmiApplyMap">Appliquer la configuration</button><span id="vmiMapStatus" class="vmi-muted">Configuration non validée.</span></div>
+</section>
+
+<section class="card" id="vmiAnalysisCard">
+ <h2>Analyse du CSV original</h2>
+ <div id="vmiAnalysisNotice" class="vmi-warn">Importe un CSV VMI Plus puis valide les emplacements des sondes pour activer l'analyse hygrométrique. Les codes numériques de saison et de vitesse seront affichés sans leur attribuer de signification constructeur.</div>
+ <div id="vmiRecommendation" class="advice">La préconisation apparaîtra après validation des sondes.</div>
+ <div class="vmi-grid" id="vmiAnalysisKpis"></div>
+ <h3>Statistiques globales des champs interprétés</h3>
+ <div class="vmi-table-wrap"><table id="vmiStatsTable"><thead><tr><th>Paramètre</th><th>Mesures</th><th>Médiane</th><th>Moyenne</th><th>Min.</th><th>Max.</th></tr></thead><tbody><tr><td colspan="6">En attente de données.</td></tr></tbody></table></div>
+ <h3>Analyse par heure (0–23 h)</h3>
+ <p class="vmi-muted">Calculée uniquement sur les dates et les sondes explicitement associées. Le nombre de mesures et la couverture sont affichés. Les relevés d'événements ne constituent pas nécessairement une série continue.</p>
+ <div class="vmi-table-wrap"><table id="vmiHourlyTable"><thead><tr><th>Heure</th><th>N</th><th>HR int.</th><th>HA int.</th><th>HA ext.</th><th>Δ HA</th><th>Codes vitesse</th><th>Codes saison</th></tr></thead><tbody><tr><td colspan="8">En attente de configuration.</td></tr></tbody></table></div>
+ <h3>Analyse horaire par code saison brut</h3><div id="vmiSeasonalTables" class="vmi-table-wrap"><p class="vmi-muted">En attente de données.</p></div>
+ <h3>Comparaison descriptive par code vitesse</h3>
+ <p class="vmi-muted">Le CSV ne permet pas, à lui seul, de prouver qu'un code est le mode 1, 2 ou 3. Les résultats restent descriptifs et ne prouvent aucune causalité.</p>
+ <div class="vmi-table-wrap"><table id="vmiSpeedTable"><thead><tr><th>Code brut</th><th>N</th><th>Débit médian</th><th>RPM médian</th><th>PWM médian</th><th>Δ HA médian</th><th>Confiance</th></tr></thead><tbody><tr><td colspan="7">En attente de données.</td></tr></tbody></table></div>
+ <h3>Répartition des codes saison / mode / événements</h3>
+ <div id="vmiCodeSummary" class="note">En attente de données.</div>
+</section>
+
+<section class="card" id="vmiExportCard">
+ <h2>Exports complets</h2>
+ <div class="row">
+  <label>Du <input type="date" id="vmiExportFrom"></label>
+  <label>Au <input type="date" id="vmiExportTo"></label>
+ </div>
+ <div class="row">
+  <button class="outline" id="vmiExportOriginal">CSV original inchangé</button>
+  <button class="outline" id="vmiExportNormalized">CSV normalisé complet</button>
+  <button class="outline" id="vmiExportJson">JSON données VMI Plus</button>
+  <button class="outline" id="vmiExportReport">Rapport d'analyse</button>
+ </div>
+ <div class="row">
+  <button class="outline" id="vmiExportLive">CSV mesures Bluetooth</button>
+  <button class="outline" id="vmiExportHygro">CSV calculs hygrométriques</button>
+  <button class="outline" id="vmiExportRecs">CSV recommandations</button>
+ </div>
+ <p class="vmi-muted">Le fichier original est conservé octet pour octet sous forme de texte UTF-8 après lecture navigateur. Les exports normalisés ajoutent des colonnes calculées sans écraser les colonnes d'origine.</p>
+ <div id="vmiExportStatus" class="status"></div>
+</section>
+
 </main>
 
 <script>
@@ -843,6 +927,301 @@ $('themeBtn').onclick=()=>{
  try{localStorage.setItem('vmi_theme',root.dataset.theme)}catch(e){}
 };
 try{const theme=localStorage.getItem('vmi_theme');if(theme)document.documentElement.dataset.theme=theme}catch(e){}
+
+/* ============================================================
+   MODULE ADDITIF VMI PLUS CSV / ANALYSE / EXPORT
+   Le protocole Bluetooth et ses fonctions d'origine restent inchangés.
+   ============================================================ */
+const VMI_PLUS_KEY='vmiPlusRawV1';
+let vmiPlus={originalText:'',originalBase64:'',metaLines:[],headers:[],rows:[],badRows:[],duplicateRows:0,importedAt:null,fileName:'',delimiter:';',mapping:{tin:'',rhin:'',tout:'',rhout:'',speed:'Vitesse',date:'Date'}};
+let vmiDerived=[],vmiRecommendations=[];
+
+const vmiNum = v => {
+ if(v===null||v===undefined)return {value:null,status:'missing'};
+ const z=String(v).trim();
+ if(!z)return {value:null,status:'missing'};
+ if(/^OFF$/i.test(z))return {value:null,status:'off'};
+ if(/^(NA|N\/A|null|undefined)$/i.test(z))return {value:null,status:'na'};
+ const n=Number(z.replace(/\s/g,'').replace(',','.'));
+ return Number.isFinite(n)?{value:n,status:'valid'}:{value:null,status:'invalid'};
+};
+function vmiBase64(buffer){
+ const bytes=new Uint8Array(buffer);let binary='';
+ for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,Math.min(i+0x8000,bytes.length)));
+ return btoa(binary);
+}
+function vmiBase64Blob(base64,type){
+ const binary=atob(base64),bytes=new Uint8Array(binary.length);
+ for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+ return new Blob([bytes],{type});
+}
+function vmiParseCSV(text,delimiter){
+ const out=[];let row=[],field='',quoted=false;
+ for(let i=0;i<text.length;i++){
+  const c=text[i];
+  if(quoted){
+   if(c==='"'&&text[i+1]==='"'){field+='"';i++}
+   else if(c==='"')quoted=false;
+   else field+=c;
+  }else if(c==='"')quoted=true;
+  else if(c===delimiter){row.push(field);field=''}
+  else if(c==='\n'){row.push(field.replace(/\r$/,''));out.push(row);row=[];field=''}
+  else field+=c;
+ }
+ if(field.length||row.length){row.push(field.replace(/\r$/,''));out.push(row)}
+ return out;
+}
+function vmiDetectDelimiter(text){
+ const line=(text.split(/\r?\n/).find(x=>x.trim())||'');
+ const counts={';':(line.match(/;/g)||[]).length,',':(line.match(/,/g)||[]).length,'\t':(line.match(/\t/g)||[]).length};
+ return Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+}
+function vmiParseFrenchDate(value){
+ if(!value)return null;
+ const m=String(value).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+ if(!m)return null;
+ const d=new Date(+m[3],+m[2]-1,+m[1],+m[4],+m[5],+(m[6]||0));
+ return Number.isFinite(d.getTime())?d.getTime():null;
+}
+function vmiColumnIndex(name){return vmiPlus.headers.indexOf(name)}
+function vmiGet(row,key){
+ const idx=vmiColumnIndex(key);return idx>=0?row[idx]:null;
+}
+function vmiDateFor(row){
+ const k=vmiPlus.mapping.date;
+ return k?vmiParseFrenchDate(vmiGet(row,k)):null;
+}
+function vmiFieldFor(row,key){
+ const k=vmiPlus.mapping[key],parsed=vmiNum(k?vmiGet(row,k):null);
+ return parsed.status==='valid'?parsed.value:null;
+}
+function vmiMedian(a){
+ const x=a.filter(Number.isFinite).sort((a,b)=>a-b);if(!x.length)return null;
+ const m=Math.floor(x.length/2);return x.length%2?x[m]:(x[m-1]+x[m])/2;
+}
+function vmiMean(a){const x=a.filter(Number.isFinite);return x.length?x.reduce((p,c)=>p+c,0)/x.length:null}
+function vmiStats(a){return {n:a.filter(Number.isFinite).length,mean:vmiMean(a),median:vmiMedian(a),min:a.length?Math.min(...a.filter(Number.isFinite)):null,max:a.length?Math.max(...a.filter(Number.isFinite)):null}}
+function vmiFmt(n,d=1){return Number.isFinite(n)?n.toFixed(d).replace('.',','):'—'}
+function vmiEscape(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function vmiCsvCell(x){const z=String(x??'');return /[;"\r\n]/.test(z)?'"'+z.replace(/"/g,'""')+'"':z}
+function vmiDownload(content,name,type='text/csv;charset=utf-8',bom=true){
+ downloadText(content,name,type,bom);
+}
+async function vmiPersist(){await dbSet(VMI_PLUS_KEY,vmiPlus)}
+function vmiRestoreMapping(){
+ for(const [id,key] of [['vmiMapTin','tin'],['vmiMapRHin','rhin'],['vmiMapTout','tout'],['vmiMapRHout','rhout'],['vmiMapSpeed','speed'],['vmiMapDate','date']]){
+  $(id).value=vmiPlus.mapping[key]||'';
+ }
+}
+function vmiPopulateSelectors(){
+ const defs=[['vmiMapTin','tin'],['vmiMapRHin','rhin'],['vmiMapTout','tout'],['vmiMapRHout','rhout'],['vmiMapSpeed','speed'],['vmiMapDate','date']];
+ for(const [id,key] of defs){
+  const el=$(id),old=vmiPlus.mapping[key]||'';
+  el.innerHTML='<option value="">'+(key==='speed'?'Non défini':'Non définie')+'</option>';
+  for(const h of vmiPlus.headers){
+   const opt=document.createElement('option');opt.value=h;opt.textContent=h;el.appendChild(opt);
+  }
+  el.value=old;
+ }
+}
+function vmiUpdateImportDisplay(){
+ const n=vmiPlus.rows.length,b=vmiPlus.badRows.length;
+ $('vmiCsvStatus').textContent=n?`${n} lignes valides conservées · ${b} lignes rejetées · ${vmiPlus.headers.length} colonnes originales.`:'Aucun CSV VMI Plus importé.';
+ $('vmiCsvMeta').textContent=vmiPlus.metaLines.join(' | ');
+ $('vmiCsvStats').innerHTML=n?[
+  ['Fichier',vmiPlus.fileName],['Lignes valides',n],['Lignes rejetées',b],['Doublons écartés',vmiPlus.duplicateRows||0],['Colonnes',vmiPlus.headers.length],
+  ['Import',vmiPlus.importedAt?new Date(vmiPlus.importedAt).toLocaleString('fr-FR'):'—']
+ ].map(([a,b])=>`<div class="vmi-kpi"><b>${vmiEscape(b)}</b><span>${vmiEscape(a)}</span></div>`).join(''):'';
+}
+async function vmiImportCSV(file){
+ const buffer=await file.arrayBuffer(),original=new TextDecoder('utf-8').decode(buffer);
+ const delimiter=vmiDetectDelimiter(original),all=vmiParseCSV(original,delimiter);
+ if(all.length<5)throw new Error('Le fichier ne contient pas les trois lignes de métadonnées et la ligne d’en-têtes attendues.');
+ const headers=all[3].map((x,i)=>String(x||'').trim()||`COLONNE_SANS_NOM_${i+1}`);
+ if(headers.length<10)throw new Error('La ligne 4 ne ressemble pas à l’en-tête du CSV VMI Plus.');
+ const rows=[],bad=[],seen=new Set();let duplicateRows=0;
+ const dateIdx=headers.indexOf('Date');
+ for(let i=4;i<all.length;i++){
+  const cells=all[i];
+  if(!cells.some(x=>String(x).trim()!==''))continue;
+  if(cells.length!==headers.length){bad.push({line:i+1,reason:`${cells.length} champs au lieu de ${headers.length}`,raw:cells});continue}
+  if(dateIdx>=0&&!vmiParseFrenchDate(cells[dateIdx])){bad.push({line:i+1,reason:'date française absente ou invalide',raw:cells});continue}
+  const sig=cells.join('¦');
+  if(seen.has(sig)){duplicateRows++;continue}
+  seen.add(sig);rows.push(cells);
+ }
+ vmiPlus={...vmiPlus,originalText:original,originalBase64:vmiBase64(buffer),metaLines:all.slice(0,3).map(r=>r.join(delimiter)),headers,rows,badRows:bad,duplicateRows,
+  importedAt:Date.now(),fileName:file.name,delimiter,mapping:{...vmiPlus.mapping,date:headers.includes('Date')?'Date':vmiPlus.mapping.date,speed:headers.includes('Vitesse')?'Vitesse':vmiPlus.mapping.speed}};
+ // Préserve les métadonnées d'origine et toutes les valeurs brutes, y compris OFF / NA / cellules vides.
+ await vmiPersist();vmiPopulateSelectors();vmiUpdateImportDisplay();vmiRenderAnalysis();
+ $('vmiMapStatus').textContent='Sondes non associées : sélectionne les emplacements réels avant toute analyse hygrométrique.';
+ $('vmiAnalysisNotice').textContent='CSV importé. Les données brutes sont conservées. Configure les sondes avant de calculer le potentiel d’assèchement.';
+}
+$('vmiCsvFile').addEventListener('change',async e=>{
+ const f=e.target.files?.[0];if(!f)return;
+ $('vmiCsvStatus').textContent='Lecture et validation du fichier…';
+ try{await vmiImportCSV(f)}catch(err){$('vmiCsvStatus').textContent='Import refusé : '+err.message}
+ e.target.value='';
+});
+$('vmiCsvClear').onclick=async()=>{
+ if(!confirm('Effacer les données CSV VMI Plus conservées dans ce navigateur ?'))return;
+ vmiPlus={originalText:'',originalBase64:'',metaLines:[],headers:[],rows:[],badRows:[],duplicateRows:0,importedAt:null,fileName:'',delimiter:';',mapping:{tin:'',rhin:'',tout:'',rhout:'',speed:'Vitesse',date:'Date'}};
+ await dbSet(VMI_PLUS_KEY,vmiPlus);vmiPopulateSelectors();vmiUpdateImportDisplay();vmiRenderAnalysis();
+};
+$('vmiApplyMap').onclick=async()=>{
+ for(const [id,key] of [['vmiMapTin','tin'],['vmiMapRHin','rhin'],['vmiMapTout','tout'],['vmiMapRHout','rhout'],['vmiMapSpeed','speed'],['vmiMapDate','date']])vmiPlus.mapping[key]=$(id).value;
+ await vmiPersist();
+ const complete=['tin','rhin','tout','rhout','date'].every(k=>!!vmiPlus.mapping[k]);
+ $('vmiMapStatus').textContent=complete?'Configuration appliquée. Vérifie que les emplacements physiques correspondent bien aux sondes sélectionnées.':'Configuration partielle : les indicateurs nécessitant un champ non défini resteront indisponibles.';
+ vmiRenderAnalysis();
+};
+function vmiRecords(){
+ const out=[];
+ for(const row of vmiPlus.rows){
+  const t=vmiDateFor(row);
+  const ti=vmiFieldFor(row,'tin'),rhi=vmiFieldFor(row,'rhin'),te=vmiFieldFor(row,'tout'),rhe=vmiFieldFor(row,'rhout');
+  const hi=absoluteHumidity(ti,rhi),he=absoluteHumidity(te,rhe);
+  const delta=hi!=null&&he!=null?hi-he:null;
+  const validHygro=hi!=null&&he!=null&&rhi>=0&&rhi<=100&&rhe>=0&&rhe<=100;
+  out.push({row,t,ti,rhi,te,rhe,hi,he,delta,dewIn:dewPoint(ti,rhi),dewOut:dewPoint(te,rhe),
+   speed:vmiPlus.mapping.speed?vmiGet(row,vmiPlus.mapping.speed):null,
+   season:vmiGet(row,'Saison'),mode:vmiGet(row,'mode'),event:vmiGet(row,'Event'),
+   debit:vmiNum(vmiGet(row,'Debit')).value,rpm:vmiNum(vmiGet(row,'Tachy (rpm)')).value,
+   pwm:vmiNum(vmiGet(row,'PWM (1/1000)')).value,validHygro});
+ }
+ return out;
+}
+function vmiRenderAnalysis(){
+ const has=vmiPlus.rows.length>0,configured=['tin','rhin','tout','rhout','date'].every(k=>!!vmiPlus.mapping[k]);
+ if(!has){
+  $('vmiAnalysisNotice').className='vmi-warn';$('vmiAnalysisNotice').textContent='Importe un CSV VMI Plus puis valide les emplacements des sondes.';
+  return;
+ }
+ const recs=vmiRecords(),usable=recs.filter(r=>r.validHygro&&r.t!=null);
+ $('vmiAnalysisNotice').className=configured?'vmi-good':'vmi-warn';
+ $('vmiAnalysisNotice').textContent=configured?`${usable.length} relevés avec date et mesures hygrométriques exploitables sur ${recs.length}. Les relevés historiques peuvent être événementiels et non continus.`:'Configuration incomplète : aucune conclusion hygrométrique globale ne sera produite tant que les quatre champs de sondes et la date ne sont pas associés.';
+ const fields=[
+  ['Température intérieure (°C)',usable.map(r=>r.ti)],['HR intérieure (%)',usable.map(r=>r.rhi)],
+  ['HA intérieure calculée (g/m³)',usable.map(r=>r.hi)],['Température extérieure (°C)',usable.map(r=>r.te)],
+  ['HR extérieure (%)',usable.map(r=>r.rhe)],['HA extérieure calculée (g/m³)',usable.map(r=>r.he)],
+  ['Δ HA int. − ext. (g/m³)',usable.map(r=>r.delta)]
+ ];
+ $('vmiStatsTable').querySelector('tbody').innerHTML=fields.map(([name,a])=>{
+  const st=vmiStats(a);return `<tr><td>${vmiEscape(name)}</td><td>${st.n}</td><td>${vmiFmt(st.median)}</td><td>${vmiFmt(st.mean)}</td><td>${vmiFmt(st.min)}</td><td>${vmiFmt(st.max)}</td></tr>`;
+ }).join('');
+ $('vmiAnalysisKpis').innerHTML=[
+  ['Relevés CSV',recs.length],['Relevés datés',recs.filter(r=>r.t!=null).length],
+  ['Relevés hygrométriques',usable.length],['Δ HA médian',configured?vmiFmt(vmiMedian(usable.map(r=>r.delta)))+' g/m³':'Non calculé'],
+  ['Δ HA positif',configured?usable.filter(r=>r.delta>0).length:'—'],['Δ HA négatif',configured?usable.filter(r=>r.delta<0).length:'—']
+ ].map(([a,b])=>`<div class="vmi-kpi"><b>${vmiEscape(b)}</b><span>${vmiEscape(a)}</span></div>`).join('');
+ const hours=Array.from({length:24},(_,h)=>({h,rs:usable.filter(r=>new Date(r.t).getHours()===h)}));
+ $('vmiHourlyTable').querySelector('tbody').innerHTML=hours.map(g=>{
+  const codes=(key)=>[...new Set(g.rs.map(r=>r[key]).filter(x=>x!==''&&x!=null))].join(', ')||'—';
+  const mean=k=>vmiFmt(vmiMean(g.rs.map(r=>r[k])));
+  return `<tr><td>${String(g.h).padStart(2,'0')} h</td><td>${g.rs.length}</td><td>${mean('rhi')}</td><td>${mean('hi')}</td><td>${mean('he')}</td><td>${mean('delta')}</td><td>${vmiEscape(codes('speed'))}</td><td>${vmiEscape(codes('season'))}</td></tr>`;
+ }).join('');
+ const seasonCodes=[...new Set(usable.map(r=>String(r.season??'Non renseigné')))];
+ $('vmiSeasonalTables').innerHTML=seasonCodes.map(code=>{
+  const seasonal=usable.filter(r=>String(r.season??'Non renseigné')===code);
+  const rows=Array.from({length:24},(_,h)=>{
+   const a=seasonal.filter(r=>new Date(r.t).getHours()===h);
+   return `<tr><td>${String(h).padStart(2,'0')} h</td><td>${a.length}</td><td>${vmiFmt(vmiMean(a.map(r=>r.hi)))}</td><td>${vmiFmt(vmiMean(a.map(r=>r.he)))}</td><td>${vmiFmt(vmiMedian(a.map(r=>r.delta)))}</td></tr>`;
+  }).join('');
+  return `<h4>Code saison ${vmiEscape(code)} · ${seasonal.length} relevés</h4><table><thead><tr><th>Heure</th><th>N</th><th>HA int. moy.</th><th>HA ext. moy.</th><th>Δ HA médian</th></tr></thead><tbody>${rows}</tbody></table>`;
+ }).join('')||'<p class="vmi-muted">Aucune donnée datée et hygrométrique.</p>';
+ const speedGroups=new Map();
+ for(const r of recs){const k=r.speed==null||r.speed===''?'(non renseigné)':String(r.speed);if(!speedGroups.has(k))speedGroups.set(k,[]);speedGroups.get(k).push(r)}
+ $('vmiSpeedTable').querySelector('tbody').innerHTML=[...speedGroups.entries()].map(([code,a])=>{
+  const n=a.length,coverage=a.filter(r=>r.validHygro).length;
+  const confidence=coverage>=30?'Échantillon descriptif ≥30':coverage>=10?'Limité (10–29)':'Faible (<10)';
+  return `<tr><td>${vmiEscape(code)}</td><td>${n}</td><td>${vmiFmt(vmiMedian(a.map(r=>r.debit)))}</td><td>${vmiFmt(vmiMedian(a.map(r=>r.rpm)))}</td><td>${vmiFmt(vmiMedian(a.map(r=>r.pwm)))}</td><td>${vmiFmt(vmiMedian(a.map(r=>r.delta)))}</td><td>${confidence}</td></tr>`;
+ }).join('');
+ const countCodes=key=>{const m=new Map();for(const r of recs){const v=r[key];if(v==null||v==='')continue;m.set(String(v),(m.get(String(v))||0)+1)}return [...m].map(([k,n])=>`${vmiEscape(k)} : ${n}`).join(' · ')||'non renseigné'};
+ $('vmiCodeSummary').innerHTML=`<b>mode :</b> ${countCodes('mode')}<br><b>Saison :</b> ${countCodes('season')}<br><b>Event :</b> ${countCodes('event')}<br><b>État système :</b> ${countCodes('etat')}`;
+ vmiDerived=recs;
+ const advice=$('vmiRecommendation');
+ if(!configured||!usable.length){
+  advice.className='advice warn';advice.textContent='Préconisation de vitesse indisponible : date et quatre mesures hygrométriques doivent être configurées et validées.';
+ }else{
+  const latest=usable.slice().sort((a,b)=>a.t-b.t).slice(-1)[0];
+  const delta=latest.delta,trendRows=usable.filter(r=>r.t>=latest.t-24*3600000&&r.t<latest.t);
+  const trend=trendRows.length>=2?latest.hi-vmiMedian(trendRows.slice(-Math.min(6,trendRows.length)).map(r=>r.hi)):null;
+  let msg=`Dernier relevé exploitable : ${new Date(latest.t).toLocaleString('fr-FR')}. Δ humidité absolue intérieur − extérieur : ${vmiFmt(delta)} g/m³. `;
+  if(delta>1)msg+='L’air extérieur est plus sec : le renouvellement d’air présente un potentiel hygrométrique d’assèchement.';
+  else if(delta< -1)msg+='L’air extérieur est plus humide en valeur absolue : une hausse de vitesse ne garantit pas un assèchement et peut augmenter l’apport d’humidité.';
+  else msg+='Les humidités absolues sont proches : le potentiel d’assèchement est faible à cet instant.';
+  if(trend!=null)msg+=` Écart indicatif de HA intérieure par rapport aux relevés précédents de la fenêtre : ${vmiFmt(trend)} g/m³.`;
+  msg+=' Aucun mode 1/2/3 ni Boost n’est recommandé automatiquement : la correspondance des codes Vitesse, le sens des codes Saison et les performances comparées à météo équivalente ne sont pas encore validés. La commande reste exclusivement manuelle.';
+  advice.className=delta>1?'advice good':delta< -1?'advice warn':'advice';advice.textContent=msg;
+ }
+}
+function vmiFilteredRows(){
+ const from=$('vmiExportFrom').value?new Date($('vmiExportFrom').value+'T00:00:00').getTime():-Infinity;
+ const to=$('vmiExportTo').value?new Date($('vmiExportTo').value+'T23:59:59').getTime():Infinity;
+ return vmiPlus.rows.filter(r=>{const t=vmiDateFor(r);return t==null||(t>=from&&t<=to)});
+}
+function vmiRowsToCSV(headers,rows){return [headers.map(vmiCsvCell).join(';'),...rows.map(r=>r.map(vmiCsvCell).join(';'))].join('\r\n')}
+$('vmiExportOriginal').onclick=()=>{
+ if(!vmiPlus.originalText){$('vmiExportStatus').textContent='Aucun fichier original.';return}
+ // Exporter le texte source intégral, sans normalisation ni réécriture.
+ if(vmiPlus.originalBase64){const blob=vmiBase64Blob(vmiPlus.originalBase64,'text/csv');const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=vmiPlus.fileName||'vmi-plus-original.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+ else vmiDownload(vmiPlus.originalText,vmiPlus.fileName||'vmi-plus-original.csv','text/csv;charset=utf-8',false);
+};
+$('vmiExportNormalized').onclick=()=>{
+ if(!vmiPlus.headers.length)return;
+ const rows=vmiFilteredRows(),extra=['date_parsee','temperature_interieure_configuree_C','HR_interieure_configuree_pct','HA_interieure_calculee_g_m3','temperature_exterieure_configuree_C','HR_exterieure_configuree_pct','HA_exterieure_calculee_g_m3','delta_HA_interieur_moins_exterieur_g_m3','point_rosee_interieur_C','point_rosee_exterieur_C'];
+ const out=rows.map(row=>{
+  const r=vmiRecords().find(x=>x.row===row);
+  return [...row,r?.t!=null?new Date(r.t).toISOString():'',r?.ti??'',r?.rhi??'',r?.hi??'',r?.te??'',r?.rhe??'',r?.he??'',r?.delta??'',r?.dewIn??'',r?.dewOut??''];
+ });
+ vmiDownload(vmiRowsToCSV([...vmiPlus.headers,...extra],out),`vmi-plus-normalise-${localDay()}.csv`);
+};
+$('vmiExportJson').onclick=()=>vmiDownload(JSON.stringify({format:'vmi-plus-preservation-v1',exportedAt:new Date().toISOString(),fileName:vmiPlus.fileName,metadata:vmiPlus.metaLines,headers:vmiPlus.headers,rows:vmiPlus.rows,badRows:vmiPlus.badRows,mapping:vmiPlus.mapping,originalText:vmiPlus.originalText},null,2),`vmi-plus-complet-${localDay()}.json`,'application/json',false);
+$('vmiExportReport').onclick=()=>{
+ const data=vmiDerived.filter(r=>r.validHygro&&r.t!=null);
+ const report={generatedAt:new Date().toISOString(),source:vmiPlus.fileName,rows:vmiPlus.rows.length,rejected:vmiPlus.badRows.length,headers:vmiPlus.headers,metadata:vmiPlus.metaLines,mapping:vmiPlus.mapping,
+  caution:'Données historiques non nécessairement continues. Les associations statistiques ne prouvent pas une causalité. Les codes constructeur ne sont pas décodés.',
+  hygrometry:{count:data.length,deltaMedian:vmiMedian(data.map(r=>r.delta)),deltaMean:vmiMean(data.map(r=>r.delta)),hours:Array.from({length:24},(_,h)=>{const a=data.filter(r=>new Date(r.t).getHours()===h);return {hour:h,count:a.length,deltaMedian:vmiMedian(a.map(r=>r.delta)),deltaMean:vmiMean(a.map(r=>r.delta))}})}};
+ vmiDownload(JSON.stringify(report,null,2),`rapport-vmi-${localDay()}.json`,'application/json',false);
+};
+$('vmiExportLive').onclick=()=>vmiDownload(histToCsv(live),`vmi-bluetooth-${localDay()}.csv`);
+$('vmiExportHygro').onclick=()=>{
+ const data=vmiDerived.filter(r=>r.t!=null);
+ const h=['date_heure','temperature_interieure_C','HR_interieure_pct','HA_interieure_g_m3','point_rosee_interieur_C','temperature_exterieure_C','HR_exterieure_pct','HA_exterieure_g_m3','point_rosee_exterieur_C','delta_HA_int_moins_ext_g_m3','code_vitesse','code_saison'];
+ const rows=data.map(r=>[new Date(r.t).toISOString(),r.ti,r.rhi,r.hi,r.dewIn,r.te,r.rhe,r.he,r.dewOut,r.delta,r.speed,r.season]);
+ vmiDownload(vmiRowsToCSV(h,rows),`vmi-hygrometrie-${localDay()}.csv`);
+};
+$('vmiExportRecs').onclick=()=>{
+ const h=['date_heure','recommandation','motif','confiance'];
+ const rows=vmiRecommendations.map(r=>[r.t,r.recommendation,r.reason,r.confidence]);
+ vmiDownload(vmiRowsToCSV(h,rows),`vmi-recommandations-${localDay()}.csv`);
+};
+// Les mesures Bluetooth restent enregistrées par la fonction takeSnapshot existante.
+// On ajoute les métadonnées de provenance sans modifier le décodage des trames.
+const _takeSnapshotOriginal=takeSnapshot;
+takeSnapshot=function(){
+ const before=live.length;_takeSnapshotOriginal();
+ if(live.length>before){
+  const r=live[live.length-1];r.source='bluetooth';r.quality='mesure directe; fraîcheur capteurs vérifiée';r.connection=connected()?'connecté':'déconnecté';
+  dbSet('live',live);
+ }
+};
+const _makeBackupOriginal=makeBackup;
+makeBackup=function(){return {..._makeBackupOriginal(),vmiPlus}};
+const _restoreBackupOriginal=restoreBackup;
+restoreBackup=function(obj){
+ const result=_restoreBackupOriginal(obj);
+ if(obj?.vmiPlus&&Array.isArray(obj.vmiPlus.headers)&&Array.isArray(obj.vmiPlus.rows)){
+  vmiPlus=obj.vmiPlus;vmiPersist().then(()=>{vmiPopulateSelectors();vmiUpdateImportDisplay();vmiRenderAnalysis()});
+ }
+ return result;
+};
+async function vmiInit(){
+ const saved=await dbGet(VMI_PLUS_KEY);
+ if(saved&&Array.isArray(saved.headers)&&Array.isArray(saved.rows)){vmiPlus={...vmiPlus,...saved};vmiPopulateSelectors();vmiUpdateImportDisplay();vmiRenderAnalysis()}
+}
+vmiInit().catch(e=>log('Restauration CSV VMI Plus : '+e.message));
+
 if(!navigator.bluetooth)showError('Web Bluetooth indisponible : ouvre cette page en HTTPS dans Chrome sur Android.');
 init();
 </script>
