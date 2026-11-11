@@ -57,7 +57,6 @@ details summary{cursor:pointer;font-weight:600}
 pre{white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font:11px/1.4 ui-monospace,monospace;background:var(--bg);padding:8px;border-radius:7px}
 footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 <main>
@@ -148,7 +147,7 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
 <section class="card">
  <h2>Historique & graphiques</h2>
  <div class="row">
-  <label for="fx">Importer un export VMI+ (.xlsx/.xls) :</label><input type="file" id="fx" accept=".xlsx,.xls">
+  <label for="fx">Importer un export VMI+ (.xlsx/.xls, nécessite internet la première fois) :</label><input type="file" id="fx" accept=".xlsx,.xls">
  </div>
  <div class="row">
   <b>Jour :</b><button class="outline" id="prev">◀</button><input type="date" id="dayPicker"><button class="outline" id="next">▶</button>
@@ -160,11 +159,20 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
   <b>Source :</b><button class="outline" id="histBtn">Historique VMI</button><button class="outline" id="liveBtn">En direct</button><button class="outline" id="clearImport">Effacer l'import</button>
  </div>
  <div id="historyStatus" class="status"></div>
+ <div id="fresh" class="advice"></div>
  <div id="importInfo" class="note"></div>
  <h3>Humidité relative (%)</h3><div id="chartRH" class="chart"></div>
  <h3>Humidité absolue (g/m³)</h3><div id="chartHA" class="chart"></div>
  <h3>Températures (°C)</h3><div id="chartTemp" class="chart"></div>
  <h3>Régime ventilateur (tr/min)</h3><div id="chartRPM" class="chart"></div>
+</section>
+
+<section class="card">
+ <h2>Sauvegarde et export</h2>
+ <p class="sub">Ton historique est stocké dans ce navigateur, qui peut le vider. La VMI ne garde que ses 800 derniers relevés (environ 4 semaines) : fais régulièrement une sauvegarde.</p>
+ <div class="row"><button class="outline" id="expHist">Exporter l’historique (CSV)</button><button class="outline" id="expBackup">Sauvegarde complète (JSON)</button></div>
+ <div class="row"><label for="restoreFile">Restaurer une sauvegarde (.json) :</label><input type="file" id="restoreFile" accept=".json,application/json"></div>
+ <div id="backupInfo" class="note"></div>
 </section>
 
 <section class="card">
@@ -174,13 +182,13 @@ footer{font-size:.75rem;color:var(--mut);text-align:center;padding:12px}
 </section>
 
 <section class="card">
- <details>
+ <details id="logDetails">
   <summary>Journal Bluetooth brut</summary>
   <div class="row"><button class="outline" id="copyLog">Copier le journal</button><button class="outline" id="clearLog">Effacer le journal</button></div>
   <pre id="log"></pre>
  </details>
 </section>
-<footer>VMI Purevent · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
+<footer>VMI Purevent · version 12 · L’heure de la VMI est synchronisée à la connexion et avant chaque téléchargement, comme le fait VMI+ ; les commandes de réglage ne sont envoyées qu’après une action manuelle. Les calculs sont indicatifs et dépendent de la fiabilité des capteurs.</footer>
 </main>
 
 <script>
@@ -206,14 +214,16 @@ const HIST_MAX=100000;
 
 let dev=null,chC=null,chT=null,pollTimer=null,snapTimer=null,reconnectTimer=null;
 let manualDisconnect=false,commandQueue=Promise.resolve(),manualCommandPending=false,polling=false,autoDone=false;
-let cur={},lastSeen={},live=[],hist=[],source='hist',selectedDate=null,daysSetting=30;
+let meta={},cur={},lastSeen={},live=[],hist=[],source='hist',selectedDate=null,daysSetting=30;
 let logLines=[],dlFrames=0;
 let download={on:false,rows:[],buf:'',total:0,sigs:new Set(),got:false,lastPacket:0,timeout:null};
 const DB='VMI_PUREVENT_DB',STORE='data';
 const connected=()=>!!(chC&&dev&&dev.gatt&&dev.gatt.connected);
 
 function showError(e){$('err').textContent=e?String(e.message||e):''}
-function log(s){logLines.push(`${new Date().toLocaleTimeString('fr-FR')} ${s}`);if(logLines.length>300)logLines.shift();const p=$('log');p.textContent=logLines.slice(-70).join('\n');p.scrollTop=p.scrollHeight}
+function renderLog(){const p=$('log');p.textContent=logLines.slice(-70).join('\n');p.scrollTop=p.scrollHeight}
+function log(s){logLines.push(`${new Date().toLocaleTimeString('fr-FR')} ${s}`);if(logLines.length>300)logLines.shift();if($('logDetails').open)renderLog()}
+$('logDetails').addEventListener('toggle',()=>{if($('logDetails').open)renderLog()});
 function setStatus(s,isConnected=false){$('st').textContent=s;$('bleState').textContent=isConnected?'Connecté':'Déconnecté';$('conn').disabled=isConnected;$('disc').disabled=!isConnected}
 
 /* Stockage local (IndexedDB) */
@@ -246,6 +256,7 @@ async function readOldDatabase(){
 async function init(){
  let l=await dbGet('live'),h=await dbGet('hist');
  live=Array.isArray(l)?l:[];hist=Array.isArray(h)?h:[];
+ meta=(await dbGet('meta'))||{};
  const migrated=await dbGet('migrated');
  if(!migrated&&!hist.length&&!live.length){
   const old=await readOldDatabase();
@@ -538,6 +549,7 @@ function finishDownload(reachedCut,timeout=false){
  download.on=false;clearTimeout(download.timeout);
  const count=download.rows.length;
  if(count)ingest(download.rows,'Téléchargement');
+ if(download.got){meta.lastSync=Date.now();dbSet('meta',meta);renderFreshness()}
  $('dlh').disabled=false;setCommandsDisabled(false);
  $('dlp').textContent=`Terminé : ${count} nouvelles lignes${reachedCut?' · historique à jour':timeout?(download.got?' · arrêt après une pause de 20 s':' · aucune réponse de la VMI'):(download.sigs.size?' · attention : trou possible avant la dernière ligne mémorisée':' · historique complet')}`;
  if(reachedCut&&dev&&dev.gatt&&dev.gatt.connected)dev.gatt.disconnect();
@@ -561,10 +573,29 @@ function autoHistory(){
 }
 
 /* Import tableur */
+const XLSX_URLS=['https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js','https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'];
+function loadScript(url,ms=15000){
+ return new Promise((res,rej)=>{
+  const sc=document.createElement('script');
+  const t=setTimeout(()=>{sc.remove();rej(new Error('délai dépassé'))},ms);
+  sc.src=url;sc.onload=()=>{clearTimeout(t);res()};sc.onerror=()=>{clearTimeout(t);sc.remove();rej(new Error('échec du chargement'))};
+  document.head.appendChild(sc);
+ });
+}
+let xlsxPromise=null;
+function loadXLSX(){
+ if(window.XLSX)return Promise.resolve();
+ if(!xlsxPromise)xlsxPromise=(async()=>{
+  for(const u of XLSX_URLS){try{await loadScript(u);if(window.XLSX)return}catch(e){log('SheetJS : '+e.message+' ('+u+')')}}
+  throw new Error('Impossible de charger la bibliothèque Excel : l’import .xlsx demande une connexion internet (une seule fois). Le téléchargement par Bluetooth n’en a pas besoin.');
+ })().catch(e=>{xlsxPromise=null;throw e});
+ return xlsxPromise;
+}
 $('fx').onchange=async e=>{
  const file=e.target.files&&e.target.files[0];if(!file)return;showError('');
  try{
-  if(!window.XLSX)throw new Error('La bibliothèque de lecture Excel ne s’est pas chargée. Vérifie ta connexion internet.');
+  $('importInfo').textContent='Chargement de la bibliothèque Excel…';
+  await loadXLSX();
   const wb=XLSX.read(await file.arrayBuffer(),{type:'array',cellDates:false});
   const sheet=wb.Sheets[wb.SheetNames[0]];
   if(!sheet)throw new Error('Aucune feuille trouvée.');
@@ -587,10 +618,75 @@ $('csv').onclick=()=>{
  const rows=[keys.join(';'),...live.map(r=>keys.map(k=>k==='t'?new Date(r.t).toISOString():(r[k]!=null?r[k]:'')).join(';'))];
  downloadText(rows.join('\n'),'vmi-purevent-live.csv','text/csv;charset=utf-8');
 };
-function downloadText(content,name,type){
- const blob=new Blob(['\ufeff',content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');
+function downloadText(content,name,type,bom=true){
+ const blob=new Blob(bom?['\ufeff',content]:[content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');
  a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+
+/* ---------- Export, sauvegarde et fraîcheur de l'historique ---------- */
+const fmtLocal=t=>{const d=new Date(t);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`};
+const fmtShort=t=>{const d=new Date(t);return `${pad(d.getDate())}/${pad(d.getMonth()+1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`};
+const decFr=v=>(v==null||!Number.isFinite(v))?'':String(Math.round(v*100)/100).replace('.',',');
+function histToCsv(rows){
+ const head=['date_heure','salon_temp_C','salon_HR_pct','salon_HA_g_m3','salon_rosee_C','sonde1_temp_C','sonde1_HR_pct','air_entrant_temp_C','air_entrant_HR_pct','air_entrant_HA_g_m3','regime_tr_min','filtre_jours_usage','jours_fonctionnement'];
+ const lines=[head.join(';')];
+ for(const r of rows){
+  const p=psychro({st:r.st,sh:r.sh,te:r.te,he:r.he});
+  lines.push([fmtLocal(r.t),decFr(r.st),decFr(r.sh),decFr(p.haIn),decFr(p.dewIn),decFr(r.t1),decFr(r.h1),decFr(r.te),decFr(r.he),decFr(p.haOut),decFr(r.rpm),decFr(r.fil),decFr(r.d)].join(';'));
+ }
+ return lines.join('\r\n');
+}
+function makeBackup(){return {app:'vmi-purevent',version:1,exportedAt:new Date().toISOString(),hist,live,meta}}
+function restoreBackup(obj){
+ if(!obj||obj.app!=='vmi-purevent'||!Array.isArray(obj.hist))throw new Error('Fichier de sauvegarde non reconnu.');
+ const map=new Map(hist.map(r=>[r.t,r]));let add=0;
+ for(const r of obj.hist){if(r&&Number.isFinite(r.t)&&r.t>=MIN_VALID&&!map.has(r.t)){map.set(r.t,r);add++}}
+ hist=[...map.values()].sort((a,b)=>a.t-b.t);
+ let addL=0;
+ if(Array.isArray(obj.live)){const seen=new Set(live.map(r=>r.t));for(const r of obj.live){if(r&&Number.isFinite(r.t)&&!seen.has(r.t)){live.push(r);seen.add(r.t);addL++}}live.sort((a,b)=>a.t-b.t);if(live.length>10000)live=live.slice(-10000)}
+ pruneHist();dbSet('hist',hist);dbSet('live',live);
+ if(obj.meta&&obj.meta.lastSync&&(!meta.lastSync||obj.meta.lastSync>meta.lastSync)){meta.lastSync=obj.meta.lastSync;dbSet('meta',meta)}
+ return {add,addL};
+}
+$('expHist').onclick=()=>{
+ const rows=hist.filter(r=>r.t>=MIN_VALID);
+ if(!rows.length){$('backupInfo').textContent='Aucun historique à exporter.';return}
+ downloadText(histToCsv(rows),`vmi-historique-${localDay()}.csv`,'text/csv;charset=utf-8');
+ $('backupInfo').textContent=`${rows.length} relevés exportés (séparateur « ; », virgule décimale, prêt pour Excel).`;
+};
+$('expBackup').onclick=()=>{
+ downloadText(JSON.stringify(makeBackup()),`vmi-sauvegarde-${localDay()}.json`,'application/json',false);
+ $('backupInfo').textContent=`Sauvegarde créée : ${hist.length} relevés d’historique, ${live.length} relevés en direct.`;
+};
+$('restoreFile').onchange=async e=>{
+ const file=e.target.files&&e.target.files[0];if(!file)return;
+ try{
+  const obj=JSON.parse(await file.text());
+  const {add,addL}=restoreBackup(obj);
+  $('backupInfo').textContent=`Sauvegarde restaurée : ${add} relevés d’historique et ${addL} relevés en direct ajoutés.`;
+  render();
+ }catch(err){$('backupInfo').textContent='Restauration impossible : '+err.message}
+ e.target.value='';
+};
+/* La VMI ne garde que ~800 relevés : on estime sa capacité en jours d'après le rythme réel des relevés
+   et on prévient avant que des relevés non téléchargés soient écrasés. */
+function renderFreshness(){
+ const box=$('fresh');
+ const rows=hist.filter(r=>r.t>=MIN_VALID);
+ if(!rows.length){box.className='advice';box.textContent='Aucun historique mémorisé. Connecte la VMI pour le télécharger : elle ne garde que ses 800 derniers relevés (environ 4 semaines).';return}
+ const newest=rows[rows.length-1].t,age=(Date.now()-newest)/DAY;
+ const spanDays=Math.max(1,Math.min(14,(newest-rows[0].t)/DAY));
+ const perDay=rows.filter(r=>r.t>=newest-14*DAY).length/spanDays;
+ const cap=perDay>0?Math.min(60,Math.max(7,800/perDay)):28;
+ const left=cap-age;
+ let cls='advice good';
+ let msg=`Historique à jour jusqu’au ${fmtShort(newest)} (il y a ${age<1?Math.max(0,Math.round(age*24))+' h':age.toFixed(1)+' j'}). La VMI garde environ ${Math.round(cap)} jours de relevés : télécharge avant le ${fmtShort(newest+cap*DAY)}.`;
+ if(left<=0){cls='advice warn';msg+=' ⚠ Des relevés ont peut-être déjà été écrasés : connecte-toi maintenant.'}
+ else if(age>=14||left<7){cls='advice warn';msg+=' Pense à te connecter bientôt.'}
+ if(meta.lastSync)msg+=` Dernière synchronisation : ${fmtShort(meta.lastSync)}.`;
+ box.className=cls;box.textContent=msg;
+}
+setInterval(renderFreshness,60000);
 
 /* ---------- Graphiques SVG ---------- */
 function selectedData(){
@@ -733,7 +829,7 @@ function render(){
  $('historyStatus').textContent=`${data.length} relevés affichés · ${source==='live'?'enregistrement local en direct':'historique importé / VMI'} · ${selectedDate?'jour '+selectedDate:(daysSetting?daysSetting+' derniers jours':'toute la période')}`;
  const lastRpm=[...hist].reverse().find(r=>Number.isFinite(r.rpm));
  $('rpm').textContent=lastRpm?lastRpm.rpm:'–';
- renderCharts(data);renderRecommendation(data);analyzeSpeeds(data);
+ renderCharts(data);renderRecommendation(data);analyzeSpeeds(data);renderFreshness();
 }
 $('targetRH').onchange=render;$('minSamples').onchange=render;
 
